@@ -51,6 +51,7 @@ void convert_games(const std::string &pgn_file_name, Options options,
 }
 
 int main(int argc, char *argv[]) {
+  std::cout << "TrainingData Tool v1.1 (Stockfish Arg Fix)" << std::endl;
   lczero::InitializeMagicBitboards();
   polyglot_init();
   Options options;
@@ -117,6 +118,18 @@ int main(int argc, char *argv[]) {
 
   TrainingDataWriter writer(max_files_per_directory, chunks_per_file, "deduped-");
   for (size_t idx = 1; idx < argc; ++idx) {
+    std::string arg = argv[idx];
+    // Skip option flags and their values
+    if (arg[0] == '-') {
+      // Skip the value for options that take a parameter
+      if (arg == "-stockfish" || arg == "-sf-depth" || arg == "-files-per-dir" ||
+          arg == "-max-games-to-convert" || arg == "-chunks-per-file" ||
+          arg == "-dedup-uniq-buffersize" || arg == "-dedup-q-ratio") {
+        ++idx;  // Skip the next argument (the value)
+      }
+      continue;
+    }
+    
     if (deduplication_mode) {
       if (!directory_exists(argv[idx])) continue;
       TrainingDataReader reader(argv[idx]);
