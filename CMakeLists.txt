@@ -90,6 +90,11 @@ if (MSVC)
     set_source_files_properties(${polyglot} PROPERTIES 
         COMPILE_OPTIONS "/Zc:strictStrings-;/permissive"
     )
+elseif (MINGW)
+    # MinGW/GCC also needs lenient handling for legacy C code
+    set_source_files_properties(${polyglot} PROPERTIES 
+        COMPILE_OPTIONS "-fpermissive;-Wno-write-strings"
+    )
 endif()
 
 # TODO: Add tests and install targets if needed.
