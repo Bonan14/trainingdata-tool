@@ -3,6 +3,8 @@
 
 #include <string>
 #include <cstdio>
+#include <cstdint>
+#include <vector>
 
 // Manages communication with Stockfish via UCI protocol
 class StockfishEvaluator {
@@ -16,9 +18,19 @@ class StockfishEvaluator {
   // Set position from FEN string
   void setPosition(const std::string& fen);
 
-  // Evaluate current position at given depth, returns centipawn score
-  // Returns 0 on failure, positive for white advantage, negative for black
-  int evaluate(int depth);
+  // Set position using startpos/fen and move list
+  void setPositionMoves(const std::string& start_fen, const std::vector<std::string>& moves);
+
+  struct Result {
+    int score_cp;
+    std::string best_move; // Long algebraic notation (e.g. "e2e4")
+    uint32_t nodes;
+    
+    Result() : score_cp(0), nodes(0) {}
+  };
+
+  // Evaluate current position at given depth
+  Result evaluate(int depth);
 
   // Convert centipawn score to win probability Q value [-1, 1]
   static float cpToWinProbability(int centipawns);

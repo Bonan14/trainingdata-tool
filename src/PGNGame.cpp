@@ -2,10 +2,15 @@
 #include "StockfishEvaluator.h"
 #include "trainingdata.h"
 
+#include <regex>
 #include <cmath>
 #include <cstring>
 #include <iostream>
-#include <regex>
+#include <cctype>
+
+
+
+
 #include <sstream>
 #include <vector>
 
@@ -32,6 +37,30 @@ bool extract_lichess_comment_score(const char* comment, float& Q) {
     return false;
   }
   return false;
+  return false;
+}
+
+std::string poly_move_to_uci(move_t move_raw) {
+  // Use explicit bitwise ops based on verified layout: (from << 6) | to
+  uint16_t move = (uint16_t)move_raw;
+  int from = (move >> 6) & 0x3f;
+  int to = move & 0x3f;
+  int promo = (move >> 12) & 7;
+
+  // std::cout << "POLY: move=" << move << " from=" << from << " to=" << to << std::endl;
+
+  std::string s;
+  s += (char)('a' + (from % 8));
+  s += (char)('1' + (from / 8));
+  s += (char)('a' + (to % 8));
+  s += (char)('1' + (to / 8));
+  
+  if (promo == 1) s += 'n';
+  else if (promo == 2) s += 'b';
+  else if (promo == 3) s += 'r';
+  else if (promo == 4) s += 'q';
+
+  return s;
 }
 
 lczero::Move poly_move_to_lc0_move(move_t move, board_t* board) {
@@ -84,6 +113,7 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(Options options,
   lczero::ChessBoard starting_board;
   std::string starting_fen =
       std::strlen(this->fen) > 0 ? this->fen : lczero::ChessBoard::kStartposFen;
+  std::vector<std::string> uci_moves;
 
   {
     std::istringstream fen_str(starting_fen);
@@ -110,24 +140,58 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(Options options,
   board_from_fen(board, starting_fen.c_str());
 
   lczero::GameResult game_result;
-  if (options.verbose) {
-    std::cout << "Game result: " << this->result << std::endl;
-  }
-  if (my_string_equal(this->result, "1-0")) {
+  if (strcmp(this->result, "1-0") == 0) {
     game_result = lczero::GameResult::WHITE_WON;
-  } else if (my_string_equal(this->result, "0-1")) {
+  } else if (strcmp(this->result, "0-1") == 0) {
     game_result = lczero::GameResult::BLACK_WON;
-  } else {
+  } else if (strcmp(this->result, "1/2-1/2") == 0) {
     game_result = lczero::GameResult::DRAW;
+  } else {
+    game_result = lczero::GameResult::DRAW; // fallback for unrecognized result
+
   }
 
   char str[256];
-  for (auto pgn_move : this->moves) {
-    // Extract move from pgn
-    int move = move_from_san(pgn_move.move, board);
+  // Iterate over moves with robust SAN cleaning and safe handling
+  for (size_t i = 0; i < this->moves.size(); ++i) {
+    const auto &pgn_move = this->moves[i];
+
+    // ----- SAN cleaning -------------------------------------------------
+    std::string san = pgn_move.move;
+    // Trim leading/trailing whitespace
+    san.erase(0, san.find_first_not_of(" \t\r\n"));
+    if (!san.empty())
+      san.erase(san.find_last_not_of(" \t\r\n") + 1);
+    // Remove move numbers like "1.", "23..."
+    size_t dotPos = san.find('.');
+    if (dotPos != std::string::npos) {
+      bool precedingDigits = true;
+      for (size_t j = 0; j < dotPos; ++j) {
+        if (!isdigit(san[j])) { precedingDigits = false; break; }
+      }
+      if (precedingDigits) {
+        san = san.substr(dotPos + 1);
+        san.erase(0, san.find_first_not_of(" \t"));
+      }
+    }
+    // Discard any PGN comment start '{' and everything after it
+    size_t bracePos = san.find('{');
+    if (bracePos != std::string::npos) san = san.substr(0, bracePos);
+    // Remove trailing annotation symbols (!, ?, +, #, =)
+    while (!san.empty() && (san.back() == '!' || san.back() == '?' ||
+                            san.back() == '+' || san.back() == '#' || san.back() == '=')) {
+      san.pop_back();
+    }
+    // Remove trailing period
+    if (!san.empty() && san.back() == '.') san.pop_back();
+    // -------------------------------------------------------------------
+
+    int move = move_from_san(san.c_str(), board);
     if (move == MoveNone || !move_is_legal(move, board)) {
-      std::cout << "illegal move \"" << pgn_move.move << std::endl;
-      break;
+      if (options.verbose) {
+        std::cout << "Skipping illegal move \"" << pgn_move.move << "\" (parsed as \"" << san << "\")" << std::endl;
+      }
+      continue;
     }
 
     if (options.verbose) {
@@ -140,92 +204,103 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(Options options,
 
     bool bad_move = false;
     if (pgn_move.nag[0]) {
-      // If the move is bad or dubious, skip it.
-      // See https://en.wikipedia.org/wiki/Numeric_Annotation_Glyphs for PGN
-      // NAGs
       if (pgn_move.nag[0] == '2' || pgn_move.nag[0] == '4' ||
           pgn_move.nag[0] == '5' || pgn_move.nag[0] == '6') {
         bad_move = true;
       }
     }
 
-    // Convert move to lc0 format
     lczero::Move lc0_move = poly_move_to_lc0_move(move, board);
 
-    bool found = false;
-    auto legal_moves = position_history.Last().GetBoard().GenerateLegalMoves();
-    for (auto legal : legal_moves) {
-      // In new lc0, castling moves are stored normalized?
-      // lc0 generates legal moves. If lc0_move matches one of them.
-      // Move::operator== checks exact match of data_.
-      // For castling, lc0 stores KingTakesRook.
-      // My construction used WhiteCastling which does exactly that.
-      // So simple equality check should work.
-      if (legal == lc0_move) {
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      std::cout << "Move not found: " << pgn_move.move << " "
-                << square_file(move_to(move)) << std::endl;
-    }
-
-    // Extract eval scores and convert to win probability
+    // Evaluation
     float Q = 0.0f;
+    uint32_t visits = 1;
+    std::string sf_best_move_str;
+
     if (options.stockfish_mode && evaluator) {
-      // Use Stockfish to evaluate the current position
-      std::string current_fen = BoardToFen(position_history.Last().GetBoard());
-      evaluator->setPosition(current_fen);
-      int cp_score = evaluator->evaluate(sf_depth);
-      Q = StockfishEvaluator::cpToWinProbability(cp_score);
+      // Use move history instead of FEN to prevent engine hangs
+      evaluator->setPositionMoves(starting_fen, uci_moves);
+      auto sf_result = evaluator->evaluate(sf_depth);
+      Q = StockfishEvaluator::cpToWinProbability(sf_result.score_cp);
+      visits = sf_result.nodes;
+      sf_best_move_str = sf_result.best_move;
+      
       if (options.verbose) {
-        std::cout << "SF eval: " << cp_score << " cp, Q=" << Q << std::endl;
+        std::cout << "SF eval: " << sf_result.score_cp << " cp, Q=" << Q 
+                  << ", bestmove=" << sf_best_move_str << std::endl;
       }
     } else if (options.lichess_mode) {
       if (pgn_move.comment[0]) {
         float lichess_score;
-        bool success =
-            extract_lichess_comment_score(pgn_move.comment, lichess_score);
-        if (!success) {
-          break;  // Comment contained no "%eval"
+        bool success = extract_lichess_comment_score(pgn_move.comment, lichess_score);
+        if (success) {
+          Q = convert_sf_score_to_win_probability(lichess_score);
+        } else if (options.verbose) {
+          std::cout << "Skipping Lichess eval for move \"" << pgn_move.move << "\" – no %eval found" << std::endl;
         }
-        Q = convert_sf_score_to_win_probability(lichess_score);
-      } else {
-        // This game has no comments, skip it.
-        break;
+      } else if (options.verbose) {
+        std::cout << "No Lichess comment for move \"" << pgn_move.move << "\" – skipping eval" << std::endl;
       }
     }
 
-    if (!(bad_move && options.lichess_mode)) {
-      // Generate training data
-      lczero::V6TrainingData chunk = get_v6_training_data(
-          game_result, position_history, lc0_move, legal_moves, Q);
-      chunks.push_back(chunk);
-      if (options.verbose) {
-        std::string result;
-        switch (game_result) {
-          case lczero::GameResult::WHITE_WON:
-            result = "1-0";
-            break;
-          case lczero::GameResult::BLACK_WON:
-            result = "0-1";
-            break;
-          case lczero::GameResult::DRAW:
-            result = "1/2-1/2";
-            break;
-          default:
-            result = "???";
-            break;
+    auto legal_moves = position_history.Last().GetBoard().GenerateLegalMoves();
+    
+    // Resolve best_move
+    lczero::Move best_move = lczero::Move();
+    if (!sf_best_move_str.empty()) {
+        for (const auto& m : legal_moves) {
+            // ToString(false) produces coordinate notation e.g. "e2e4"
+            if (m.ToString(false) == sf_best_move_str) {
+                best_move = m;
+                break;
+            }
         }
-        std::cout << "Write chunk: [" << lc0_move.ToString(false) << ", " << result
-                  << ", " << Q << "]\n";
-      }
+    } else {
+        // Fallback: if no best move from SF (or Lichess mode), maybe use played move or null?
+        // Lc0 usually expects best_move to be valid if we have policy.
+        // If we don't have SF, we just set it to played move (like before) or Null.
+        // The original code set best_idx = played_idx.
+        // Let's set it to played_move if null, to match old behavior for non-SF.
+        best_move = lc0_move;
     }
 
-    // Execute move
+    lczero::V6TrainingData chunk = get_v6_training_data(
+        game_result, position_history, lc0_move, legal_moves, Q, best_move, visits);
+    chunks.push_back(chunk);
+    if (options.verbose) {
+      std::string result;
+      switch (game_result) {
+        case lczero::GameResult::WHITE_WON: result = "1-0"; break;
+        case lczero::GameResult::BLACK_WON: result = "0-1"; break;
+        case lczero::GameResult::DRAW: result = "1/2-1/2"; break;
+        default: result = "???"; break;
+      }
+      std::cout << "Write chunk: [" << poly_move_to_uci(move) << ", " << result << ", " << Q << "]" << std::endl;
+    }
+    
+    // Apply move
     position_history.Append(lc0_move);
     move_do(board, move);
+    
+    // Track move for Stockfish history
+    uci_moves.push_back(poly_move_to_uci(move));
+  }
+
+  // Post-process chunks to update root_q (eval of played move)
+  // Logic: The position after playing the move is the next chunk's position.
+  // The eval of next chunk (best_q) is from opponent's perspective.
+  // So value of played move for us is -next_chunk.best_q.
+  
+  if (!chunks.empty()) {
+      for (size_t i = 0; i < chunks.size() - 1; ++i) {
+          chunks[i].root_q = -chunks[i+1].best_q;
+      }
+      // For the last chunk, we don't have a next position eval.
+      // Use result_q (game result) as the fallback for "played move value"?
+      // Or keep it as best_q if we assume last move was reasonable?
+      // Lc0 usually trains on result_q heavily.
+      // Let's set it to result_q to be consistent with "outcome".
+      chunks.back().root_q = chunks.back().result_q;
   }
 
   if (options.verbose) {

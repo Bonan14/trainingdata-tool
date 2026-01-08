@@ -7,6 +7,7 @@
 #include <chrono>
 #include <thread>
 #include <regex>
+#include <deque>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -57,6 +58,9 @@ bool StockfishEvaluator::init() {
 #else
 // POSIX implementation using fork/exec
 bool StockfishEvaluator::init() {
+  // Ignore SIGPIPE to avoid crashing if Stockfish terminates unexpectedly
+  signal(SIGPIPE, SIG_IGN);
+
   int stdin_pipe[2];   // Parent writes, child reads
   int stdout_pipe[2];  // Child writes, parent reads
 
@@ -109,8 +113,9 @@ bool StockfishEvaluator::init() {
     return false;
   }
   
-  sendCommand("setoption name Threads value 1");
-  sendCommand("setoption name Hash value 16");
+  sendCommand("setoption name Threads value 2");
+  sendCommand("setoption name Hash value 1600");
+  sendCommand("setoption name UCI_ShowWDL value true");
   sendCommand("isready");
   
   if (!waitFor("readyok", 5000)) {
@@ -128,7 +133,25 @@ void StockfishEvaluator::setPosition(const std::string& fen) {
   sendCommand(cmd);
 }
 
-int StockfishEvaluator::evaluate(int depth) {
+void StockfishEvaluator::setPositionMoves(const std::string& start_fen, const std::vector<std::string>& moves) {
+  std::ostringstream cmd;
+  cmd << "position ";
+  if (start_fen == "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" || start_fen.empty()) {
+    cmd << "startpos";
+  } else {
+    cmd << "fen " << start_fen;
+  }
+  
+  if (!moves.empty()) {
+    cmd << " moves";
+    for (const auto& m : moves) {
+      cmd << " " << m;
+    }
+  }
+  sendCommand(cmd.str());
+}
+
+StockfishEvaluator::Result StockfishEvaluator::evaluate(int depth) {
   std::ostringstream cmd;
   cmd << "go depth " << depth;
   sendCommand(cmd.str());
@@ -137,8 +160,12 @@ int StockfishEvaluator::evaluate(int depth) {
   auto start = std::chrono::steady_clock::now();
   const int timeout_seconds = 30;
   
-  int score = 0;
+  Result result;
   bool found_score = false;
+  
+  // Keep last 10 lines for diagnostics
+  std::deque<std::string> recent_lines;
+  const size_t max_recent_lines = 10;
   
   std::string line;
   while (true) {
@@ -148,22 +175,49 @@ int StockfishEvaluator::evaluate(int depth) {
       auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
           std::chrono::steady_clock::now() - start).count();
       if (elapsed >= timeout_seconds) {
-        std::cerr << "Stockfish evaluation timeout after " << timeout_seconds << "s" << std::endl;
-        return 0;  // Return draw eval on timeout
+        std::cerr << "\n=== Stockfish Timeout after " << timeout_seconds << "s ===" << std::endl;
+        std::cerr << "Last " << recent_lines.size() << " lines from Stockfish:" << std::endl;
+        for (const auto& l : recent_lines) {
+          std::cerr << "  " << l << std::endl;
+        }
+        std::cerr << "=== End Stockfish Output ===" << std::endl;
+        return result;  // Return empty result on timeout
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       continue;
     }
     
+    // Store line for diagnostics
+    recent_lines.push_back(line);
+    if (recent_lines.size() > max_recent_lines) {
+      recent_lines.pop_front();
+    }
+    
+    // Check for errors from Stockfish
+    if (line.find("Illegal move") != std::string::npos ||
+        line.find("illegal move") != std::string::npos ||
+        line.find("Error") != std::string::npos) {
+      std::cerr << "Stockfish error: " << line << std::endl;
+    }
+    
+    // Capture nodes if available
+    if (line.find("nodes ") != std::string::npos) {
+      std::regex nodes_regex("nodes (\\d+)");
+      std::smatch matches;
+      if (std::regex_search(line, matches, nodes_regex)) {
+        try {
+            result.nodes = std::stoul(matches[1].str());
+        } catch (...) {}
+      }
+    }
+    
     // Parse score from info lines
-    // Example: "info depth 10 seldepth 15 score cp 35 nodes 12345 ..."
-    // Or: "info depth 10 score mate 5 ..."
     
     if (line.find("score cp ") != std::string::npos) {
       std::regex cp_regex("score cp (-?\\d+)");
       std::smatch matches;
       if (std::regex_search(line, matches, cp_regex)) {
-        score = std::stoi(matches[1].str());
+        result.score_cp = std::stoi(matches[1].str());
         found_score = true;
       }
     } else if (line.find("score mate ") != std::string::npos) {
@@ -172,17 +226,48 @@ int StockfishEvaluator::evaluate(int depth) {
       if (std::regex_search(line, matches, mate_regex)) {
         int mate_in = std::stoi(matches[1].str());
         // Convert mate score to high centipawn value
-        score = mate_in > 0 ? 10000 + (100 - mate_in) : -10000 - (100 + mate_in);
+        result.score_cp = mate_in > 0 ? 10000 + (100 - mate_in) : -10000 - (100 + mate_in);
         found_score = true;
       }
     }
     
+    // Parse WDL if enabled (e.g. "wdl 300 400 300")
+    if (line.find(" wdl ") != std::string::npos) {
+        std::regex wdl_regex(" wdl (\\d+) (\\d+) (\\d+)");
+        std::smatch matches;
+        if (std::regex_search(line, matches, wdl_regex)) {
+            int w = std::stoi(matches[1].str());
+            int l = std::stoi(matches[3].str());
+            
+            double Q_wdl = (double)(w - l) / 1000.0;
+            
+            // Protect against Q = -1 or 1 exactly causing division by zero/log(0)
+            if (Q_wdl >= 0.99) result.score_cp = 10000;
+            else if (Q_wdl <= -0.99) result.score_cp = -10000;
+            else {
+                // Formula: Q = 2 / (1 + exp(-0.4 * (cp / 100))) - 1
+                // cp = 100 * ln( 2 / (Q + 1) - 1 ) / -0.4
+                double term = 2.0 / (Q_wdl + 1.0) - 1.0;
+                if (term > 0) {
+                   result.score_cp = (int)( (std::log(term) / -0.4) * 100.0 );
+                }
+            }
+            found_score = true;
+        }
+    }
+    
     if (line.find("bestmove") != std::string::npos) {
+      std::regex bestmove_regex("bestmove ([a-h][1-8][a-h][1-8][qrbn]?)");
+      std::smatch matches;
+      if (std::regex_search(line, matches, bestmove_regex)) {
+        result.best_move = matches[1].str();
+      }
       break;
     }
   }
   
-  return found_score ? score : 0;
+  if (!found_score) result.score_cp = 0;
+  return result;
 }
 
 float StockfishEvaluator::cpToWinProbability(int centipawns) {
@@ -190,9 +275,10 @@ float StockfishEvaluator::cpToWinProbability(int centipawns) {
   if (centipawns >= 10000) return 1.0f;
   if (centipawns <= -10000) return -1.0f;
   
-  // Standard conversion formula
-  double winrate = 1.0 / (1.0 + std::pow(10.0, -centipawns / 400.0));
-  return static_cast<float>(2.0 * winrate - 1.0);
+  // Use consistent formula with PGNGame (coefficient 0.4 for pawns).
+  // User requested explicit division by 100 to convert centipawns to pawns.
+  // Formula: 2 / (1 + exp(-0.4 * (cp / 100))) - 1
+  return 2.0f / (1.0f + std::exp(-0.4f * (centipawns / 100.0f))) - 1.0f;
 }
 
 void StockfishEvaluator::quit() {
