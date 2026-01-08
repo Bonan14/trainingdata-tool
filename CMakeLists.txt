@@ -45,6 +45,7 @@ set(CMAKE_BUILD_TYPE Release)
 
 include_directories(
     "lc0/src"
+    "src"
     "polyglot/src"
     "zlib"
     "."
