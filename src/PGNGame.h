@@ -9,10 +9,12 @@
 #include "PGNMoveInfo.h"
 
 class PGNMoveInfo;
+class StockfishEvaluator;
 
 struct Options {
   bool verbose = false;
   bool lichess_mode = false;
+  bool stockfish_mode = false;
 };
 
 struct PGNGame {
@@ -21,7 +23,9 @@ struct PGNGame {
   std::vector<PGNMoveInfo> moves;
 
   explicit PGNGame(pgn_t* pgn);
-  std::vector<lczero::V6TrainingData> getChunks(Options options) const;
+  std::vector<lczero::V6TrainingData> getChunks(Options options,
+                                                 StockfishEvaluator* evaluator = nullptr,
+                                                 int sf_depth = 10) const;
 };
 
 #endif

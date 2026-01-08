@@ -5,8 +5,10 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 
 #include "PGNGame.h"
+#include "StockfishEvaluator.h"
 #include "TrainingDataDedup.h"
 #include "TrainingDataReader.h"
 #include "TrainingDataWriter.h"
@@ -16,6 +18,8 @@ int64_t max_games_to_convert = 10000000;
 size_t chunks_per_file = 4096;
 size_t dedup_uniq_buffersize = 50000;
 float dedup_q_ratio = 1.0f;
+std::string stockfish_path;
+int sf_depth = 10;
 
 inline bool file_exists(const std::string &name) {
   auto s = std::filesystem::status(name);
@@ -27,14 +31,15 @@ inline bool directory_exists(const std::string &name) {
   return std::filesystem::is_directory(s);
 }
 
-void convert_games(const std::string &pgn_file_name, Options options) {
+void convert_games(const std::string &pgn_file_name, Options options,
+                   StockfishEvaluator* evaluator) {
   int game_id = 0;
   pgn_t pgn[1];
   pgn_open(pgn, pgn_file_name.c_str());
   TrainingDataWriter writer(max_files_per_directory, chunks_per_file);
   while (pgn_next_game(pgn) && game_id < max_games_to_convert) {
     PGNGame game(pgn);
-    writer.EnqueueChunks(game.getChunks(options));
+    writer.EnqueueChunks(game.getChunks(options, evaluator, sf_depth));
     game_id++;
     if (game_id % 1000 == 0) {
       std::cout << game_id << " games written." << std::endl;
@@ -50,6 +55,7 @@ int main(int argc, char *argv[]) {
   polyglot_init();
   Options options;
   bool deduplication_mode = false;
+  
   for (size_t idx = 0; idx < argc; ++idx) {
     if (0 == static_cast<std::string>("-v").compare(argv[idx])) {
       std::cout << "Verbose mode ON" << std::endl;
@@ -58,6 +64,15 @@ int main(int argc, char *argv[]) {
                static_cast<std::string>("-lichess-mode").compare(argv[idx])) {
       std::cout << "Lichess mode ON" << std::endl;
       options.lichess_mode = true;
+    } else if (0 ==
+               static_cast<std::string>("-stockfish").compare(argv[idx])) {
+      stockfish_path = argv[idx + 1];
+      std::cout << "Stockfish mode ON, binary: " << stockfish_path << std::endl;
+      options.stockfish_mode = true;
+    } else if (0 ==
+               static_cast<std::string>("-sf-depth").compare(argv[idx])) {
+      sf_depth = std::atoi(argv[idx + 1]);
+      std::cout << "Stockfish depth set to: " << sf_depth << std::endl;
     } else if (0 ==
                static_cast<std::string>("-files-per-dir").compare(argv[idx])) {
       max_files_per_directory = std::atoi(argv[idx + 1]);
@@ -89,6 +104,17 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  // Initialize Stockfish if requested
+  std::unique_ptr<StockfishEvaluator> evaluator;
+  if (options.stockfish_mode) {
+    evaluator = std::make_unique<StockfishEvaluator>(stockfish_path);
+    if (!evaluator->init()) {
+      std::cerr << "Failed to initialize Stockfish. Exiting." << std::endl;
+      return 1;
+    }
+    std::cout << "Stockfish initialized successfully." << std::endl;
+  }
+
   TrainingDataWriter writer(max_files_per_directory, chunks_per_file, "deduped-");
   for (size_t idx = 1; idx < argc; ++idx) {
     if (deduplication_mode) {
@@ -98,9 +124,9 @@ int main(int argc, char *argv[]) {
     } else {
       if (!file_exists(argv[idx])) continue;
       if (options.verbose) {
-        std::cout << "Opening \'" << argv[idx] << "\'" << std::endl;
+        std::cout << "Opening '" << argv[idx] << "'" << std::endl;
       }
-      convert_games(argv[idx], options);
+      convert_games(argv[idx], options, evaluator.get());
     }
   }
 }

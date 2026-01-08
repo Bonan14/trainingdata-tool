@@ -1,4 +1,5 @@
 #include "PGNGame.h"
+#include "StockfishEvaluator.h"
 #include "trainingdata.h"
 
 #include <cmath>
@@ -76,7 +77,9 @@ PGNGame::PGNGame(pgn_t* pgn) {
   }
 }
 
-std::vector<lczero::V6TrainingData> PGNGame::getChunks(Options options) const {
+std::vector<lczero::V6TrainingData> PGNGame::getChunks(Options options,
+                                                        StockfishEvaluator* evaluator,
+                                                        int sf_depth) const {
   std::vector<lczero::V6TrainingData> chunks;
   lczero::ChessBoard starting_board;
   std::string starting_fen =
@@ -168,9 +171,18 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(Options options) const {
                 << square_file(move_to(move)) << std::endl;
     }
 
-    // Extract SF scores and convert to win probability
+    // Extract eval scores and convert to win probability
     float Q = 0.0f;
-    if (options.lichess_mode) {
+    if (options.stockfish_mode && evaluator) {
+      // Use Stockfish to evaluate the current position
+      std::string current_fen = BoardToFen(position_history.Last().GetBoard());
+      evaluator->setPosition(current_fen);
+      int cp_score = evaluator->evaluate(sf_depth);
+      Q = StockfishEvaluator::cpToWinProbability(cp_score);
+      if (options.verbose) {
+        std::cout << "SF eval: " << cp_score << " cp, Q=" << Q << std::endl;
+      }
+    } else if (options.lichess_mode) {
       if (pgn_move.comment[0]) {
         float lichess_score;
         bool success =
