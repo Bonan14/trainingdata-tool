@@ -7,6 +7,12 @@
 #include <iostream>
 #include <memory>
 
+#ifdef _WIN32
+#define strcasecmp _stricmp
+#else
+#include <strings.h>
+#endif
+
 #include "PGNGame.h"
 #include "StockfishEvaluator.h"
 #include "TrainingDataDedup.h"
@@ -136,6 +142,17 @@ int main(int argc, char *argv[]) {
       training_data_dedup(reader, writer, dedup_uniq_buffersize, dedup_q_ratio);
     } else {
       if (!file_exists(argv[idx])) continue;
+      
+      // Check for .pgn extension (simple case-insensitive check)
+      std::string path = argv[idx];
+      if (path.length() < 4 || 
+          (strcasecmp(path.substr(path.length() - 4).c_str(), ".pgn") != 0)) {
+        if (options.verbose) {
+          std::cout << "Skipping non-PGN file: " << path << std::endl;
+        }
+        continue;
+      }
+
       if (options.verbose) {
         std::cout << "Opening '" << argv[idx] << "'" << std::endl;
       }
