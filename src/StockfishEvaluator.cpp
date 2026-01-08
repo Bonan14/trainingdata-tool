@@ -133,7 +133,10 @@ int StockfishEvaluator::evaluate(int depth) {
   cmd << "go depth " << depth;
   sendCommand(cmd.str());
   
-  // Read output until we get "bestmove"
+  // Read output until we get "bestmove" (with 30s timeout)
+  auto start = std::chrono::steady_clock::now();
+  const int timeout_seconds = 30;
+  
   int score = 0;
   bool found_score = false;
   
@@ -141,6 +144,13 @@ int StockfishEvaluator::evaluate(int depth) {
   while (true) {
     line = readLine();
     if (line.empty()) {
+      // Check timeout
+      auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::steady_clock::now() - start).count();
+      if (elapsed >= timeout_seconds) {
+        std::cerr << "Stockfish evaluation timeout after " << timeout_seconds << "s" << std::endl;
+        return 0;  // Return draw eval on timeout
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       continue;
     }
@@ -217,7 +227,7 @@ void StockfishEvaluator::sendCommand(const std::string& cmd) {
 #else
   if (write_fd_ >= 0) {
     std::string line = cmd + "\n";
-    write(write_fd_, line.c_str(), line.size());
+    (void)write(write_fd_, line.c_str(), line.size());
   }
 #endif
 }
