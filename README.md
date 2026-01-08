@@ -5,47 +5,65 @@ Tool to generate [lc0](https://github.com/LeelaChessZero/lc0) training data. Use
 
 After cloning the repository locally, don't forget to run the following commands in order to also clone the git submodules:
 
-```
+```bash
 git submodule sync --recursive
 git submodule update --recursive --init
 ```
 
-In order to build CMake and Boost libraries are required. To install on Ubuntu, run the following command:
+Install dependencies and build:
 
-```
-sudo apt-get update && sudo apt-get install -y cmake libboost-all-dev
-```
+```bash
+# Ubuntu/Debian
+sudo apt-get update && sudo apt-get install -y cmake zlib1g-dev
 
-After submodules are cloned and all dependencies are installed build the project by running:
-
-```
-cmake .
-```
-
-followed by:
-
-```
-cmake --build .
+# Build
+cmake -S . -B build
+cmake --build build
 ```
 
 ## Usage
-Pass the PGN input file and it will output training data in the same way lc0 selfplay does. Example:
-```
-trainingdata-tool 2008_SCT_LadiesOpen.pgn
+
+Pass PGN input files and it will output training data in the same way lc0 selfplay does:
+
+```bash
+./build/trainingdata-tool games.pgn
 ```
 
-There are 4 options suported so far:
- - `-v`: Verbose mode
- - `-lichess-mode`: Lichess mode. Will extract SF evaluation score from Lichess commented games. Non-commented games will be filtered out.
- - `-files-per-dir <integer number>`: Max games to store in a single directory, when that number is reached a new directory is created to store the new games to avoid stressing the file system too much.
- - `-max-files-to-convert <integer number>`: Stop after this many files have been written.
- - `-chunks-per-file`: How many training data chunks to write in each file.
+### Options
 
- Example:
- ```
- trainingdata-tool -max-games-to-convert 1000 -files-per-dir 500 -v -lichess-mode
-Max games to convert set to: 1000
-Max files per directory set to: 500
-Verbose mode ON
-Lichess mode ON
- ```
+| Option | Description |
+|--------|-------------|
+| `-v` | Verbose mode - shows detailed progress |
+| `-lichess-mode` | Extract SF eval scores from Lichess commented games |
+| `-stockfish <path>` | Use Stockfish binary to evaluate positions |
+| `-sf-depth <N>` | Stockfish search depth (default: 10) |
+| `-files-per-dir <N>` | Max files per directory (default: 10000) |
+| `-max-games-to-convert <N>` | Limit number of games to process |
+| `-chunks-per-file <N>` | Training chunks per output file |
+| `-deduplication-mode` | Deduplicate existing training data |
+
+### Examples
+
+**Basic conversion:**
+```bash
+./build/trainingdata-tool games.pgn
+```
+
+**With Stockfish evaluation (generates Q-values):**
+```bash
+./build/trainingdata-tool -stockfish ./stockfish -sf-depth 15 games.pgn
+```
+
+**Lichess mode (for games with `[%eval]` comments):**
+```bash
+./build/trainingdata-tool -lichess-mode lichess_games.pgn
+```
+
+**Verbose with limits:**
+```bash
+./build/trainingdata-tool -v -max-games-to-convert 1000 -files-per-dir 500 games.pgn
+```
+
+## Output
+
+Training data is written to `supervised-N/` directories containing `.gz` chunk files, one game per file.
