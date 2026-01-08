@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <sys/select.h>
 #endif
 
 StockfishEvaluator::StockfishEvaluator(const std::string& stockfish_path)
@@ -238,6 +239,20 @@ std::string StockfishEvaluator::readLine() {
 #else
   if (read_fd_ < 0) return "";
   
+  // Use select to check if data is available (with 100ms timeout)
+  fd_set read_fds;
+  FD_ZERO(&read_fds);
+  FD_SET(read_fd_, &read_fds);
+  
+  struct timeval tv;
+  tv.tv_sec = 0;
+  tv.tv_usec = 100000;  // 100ms timeout
+  
+  int ret = select(read_fd_ + 1, &read_fds, nullptr, nullptr, &tv);
+  if (ret <= 0) {
+    return "";  // Timeout or error
+  }
+  
   std::string line;
   char c;
   while (read(read_fd_, &c, 1) == 1) {
@@ -247,6 +262,7 @@ std::string StockfishEvaluator::readLine() {
   return line;
 #endif
 }
+
 
 bool StockfishEvaluator::waitFor(const std::string& expected, int timeout_ms) {
   auto start = std::chrono::steady_clock::now();
