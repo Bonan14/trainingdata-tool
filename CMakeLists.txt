@@ -2,6 +2,7 @@
 # project specific logic here.
 #
 cmake_minimum_required (VERSION 3.8)
+project(trainingdata-tool)
 
 set(CMAKE_REQUIRED_FLAGS -std=c++20)
 
@@ -26,10 +27,24 @@ else (WIN32)
 endif (WIN32)
 
 AUX_SOURCE_DIRECTORY(polyglot/src polyglot)
-AUX_SOURCE_DIRECTORY(zlib zlib)
+
+# Use system zlib on Unix to avoid old bundled zlib issues with modern compilers
+if (UNIX)
+    find_package(ZLIB REQUIRED)
+    set(ZLIB_LIBS ZLIB::ZLIB)
+    set(ZLIB_INCLUDE ${ZLIB_INCLUDE_DIRS})
+else()
+    AUX_SOURCE_DIRECTORY(zlib zlib_sources)
+    set(ZLIB_LIBS "")
+    set(ZLIB_INCLUDE "zlib")
+endif()
 
 # Add source to this project's executable.
-add_executable(trainingdata-tool ${sources} ${lc0} ${lc0_filesystem} ${polyglot} ${zlib})
+if (UNIX)
+    add_executable(trainingdata-tool ${sources} ${lc0} ${lc0_filesystem} ${polyglot})
+else()
+    add_executable(trainingdata-tool ${sources} ${lc0} ${lc0_filesystem} ${polyglot} ${zlib_sources})
+endif()
 
 set_target_properties(trainingdata-tool PROPERTIES
     CXX_STANDARD 20
@@ -38,7 +53,7 @@ set_target_properties(trainingdata-tool PROPERTIES
 )
 
 if (UNIX)
-    target_link_libraries(trainingdata-tool -lpthread -lstdc++fs)
+    target_link_libraries(trainingdata-tool -lpthread -lstdc++fs ${ZLIB_LIBS})
 endif(UNIX)
 
 set(CMAKE_BUILD_TYPE Release)
@@ -47,7 +62,7 @@ include_directories(
     "lc0/src"
     "src"
     "polyglot/src"
-    "zlib"
+    ${ZLIB_INCLUDE}
     "."
 )
 
