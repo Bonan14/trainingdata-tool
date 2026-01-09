@@ -4,6 +4,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 
 namespace lczero {
 // Remove ambiguous forward declaration
@@ -29,13 +30,25 @@ lczero::V6TrainingData get_v6_training_data(
     probability = -1.0f;
   }
 
-  // Legal moves to 0
+  // Legal moves to 0  
   for (lczero::Move move : legal_moves) {
-    result.probabilities[lczero::MoveToNNIndex(move, 0)] = 0.0f;
+    uint16_t idx = lczero::MoveToNNIndex(move, 0);
+    if (idx < 1858) {
+      result.probabilities[idx] = 0.0f;
+    }
   }
 
-  // Played move to 1
-  result.probabilities[lczero::MoveToNNIndex(played_move, 0)] = 1.0f;
+  // Played move to 1 (with bounds check to prevent crash from invalid moves)
+  uint16_t played_idx = lczero::MoveToNNIndex(played_move, 0);
+  if (played_idx < 1858) {
+    result.probabilities[played_idx] = 1.0f;
+  } else {
+    // Invalid move - this shouldn't happen but prevents crash
+    // Log warning in debug builds
+    #ifndef NDEBUG
+    std::cerr << "Warning: Invalid played_move index " << played_idx << " (max 1857)" << std::endl;
+    #endif
+  }
 
   // Populate planes
   int transform = 0;
@@ -115,8 +128,12 @@ lczero::V6TrainingData get_v6_training_data(
   // Set visits
   result.visits = visits;
   
-  result.played_idx = lczero::MoveToNNIndex(played_move, 0);
-  result.best_idx = lczero::MoveToNNIndex(best_move, 0);
+  // Use the already-validated played_idx (or 0 if invalid)
+  result.played_idx = (played_idx < 1858) ? played_idx : 0;
+  
+  // best_idx with bounds check
+  uint16_t best_idx = lczero::MoveToNNIndex(best_move, 0);
+  result.best_idx = (best_idx < 1858) ? best_idx : result.played_idx;
   
   // Policy KLD - not applicable for supervised data
   result.policy_kld = 0.0f;
