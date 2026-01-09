@@ -1,22 +1,22 @@
 #include "trainingdata.h"
 #include "utils/bititer.h"
 
-#include <cstring>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 
 namespace lczero {
 // Remove ambiguous forward declaration
 }
 
-// Minimal implementation if not linked (it should be linked from lc0 utils, but to be safe)
-// Actually lc0 has it in utils/bitmanip.h -> utils/bititer.h
+// Minimal implementation if not linked (it should be linked from lc0 utils, but
+// to be safe) Actually lc0 has it in utils/bitmanip.h -> utils/bititer.h
 
 lczero::V6TrainingData get_v6_training_data(
-        lczero::GameResult game_result, const lczero::PositionHistory& history,
-        lczero::Move played_move, lczero::MoveList legal_moves, float Q,
-        lczero::Move best_move, uint32_t visits, int plies_left) {
+    lczero::GameResult game_result, const lczero::PositionHistory& history,
+    lczero::Move played_move, lczero::MoveList legal_moves, float Q,
+    lczero::Move best_move, uint32_t visits, int plies_left) {
   lczero::V6TrainingData result;
   std::memset(&result, 0, sizeof(result));
 
@@ -30,7 +30,7 @@ lczero::V6TrainingData get_v6_training_data(
     probability = -1.0f;
   }
 
-  // Legal moves to 0  
+  // Legal moves to 0
   for (lczero::Move move : legal_moves) {
     uint16_t idx = lczero::MoveToNNIndex(move, 0);
     if (idx < 1858) {
@@ -38,16 +38,19 @@ lczero::V6TrainingData get_v6_training_data(
     }
   }
 
+  const auto& position = history.Last();
+
   // Played move to 1 (with bounds check to prevent crash from invalid moves)
   uint16_t played_idx = lczero::MoveToNNIndex(played_move, 0);
   if (played_idx < 1858) {
     result.probabilities[played_idx] = 1.0f;
   } else {
-    // Invalid move - this shouldn't happen but prevents crash
-    // Log warning in debug builds
-    #ifndef NDEBUG
-    std::cerr << "Warning: Invalid played_move index " << played_idx << " (max 1857)" << std::endl;
-    #endif
+// Invalid move - this shouldn't happen but prevents crash
+// Log warning in debug builds
+#ifndef NDEBUG
+    std::cerr << "Warning: Invalid played_move index " << played_idx
+              << " (max 1857)" << std::endl;
+#endif
   }
 
   // Populate planes
@@ -57,10 +60,10 @@ lczero::V6TrainingData get_v6_training_data(
 
   // V6 stores first 104 planes (8 history * 13 planes)
   for (size_t i = 0; i < 104 && i < planes.size(); ++i) {
-    result.planes[i] = planes[i].mask;
+    result.planes[i] = lczero::ReverseBitsInBytes(planes[i].mask);
   }
 
-  const auto& position = history.Last();
+  // const auto& position = history.Last(); // Moved up
   const auto& castlings = position.GetBoard().castlings();
 
   // Populate castlings
@@ -69,19 +72,14 @@ lczero::V6TrainingData get_v6_training_data(
   result.castling_them_ooo = castlings.they_can_000() ? 1 : 0;
   result.castling_them_oo = castlings.they_can_00() ? 1 : 0;
 
-  // Side to move and enpassant
+  // Side to move and enpassant (For Classical, it is 0 or 1 for side to move)
   result.side_to_move_or_enpassant = 0;
-  if (!position.GetBoard().en_passant().empty()) {
-      int idx = static_cast<int>(lczero::GetLowestBit(position.GetBoard().en_passant().as_int()));
-      int file = idx % 8;
-      result.side_to_move_or_enpassant = (1 << file);
+  if (position.IsBlackToMove()) {
+    result.side_to_move_or_enpassant = 1;
   }
 
+  // Invariance info (0 for Classical)
   result.invariance_info = 0;
-  if (position.IsBlackToMove()) {
-     result.invariance_info |= (1 << 7);
-  }
-  result.invariance_info |= (transform & 0x7);
 
   result.rule50_count = position.GetRule50Ply();
 
@@ -101,43 +99,43 @@ lczero::V6TrainingData get_v6_training_data(
   }
   result.result_q = res_q;
   result.result_d = res_d;
-  
+
   // Q values (relative to side-to-move)
   result.root_q = result.best_q = Q;
-  
-  // D values (draw probability) - Stockfish WDL gives us this but we don't have it in current impl
-  // Set to 0 for now, can be enhanced later with WDL parsing
+
+  // D values (draw probability) - Stockfish WDL gives us this but we don't have
+  // it in current impl Set to 0 for now, can be enhanced later with WDL parsing
   result.root_d = result.best_d = 0.0f;
-  
+
   // M values (moves left estimate from engine) - placeholder
   result.root_m = result.best_m = static_cast<float>(plies_left);
-  
+
   // plies_left is the MLH training target
   result.plies_left = static_cast<float>(plies_left);
-  
+
   // Played move values (set same as root for supervised)
   result.played_q = Q;
   result.played_d = 0.0f;
   result.played_m = static_cast<float>(plies_left);
-  
+
   // Orig values (for value repair) - set to NaN as we don't have cache
   result.orig_q = std::nanf("");
   result.orig_d = std::nanf("");
   result.orig_m = std::nanf("");
-  
+
   // Set visits
   result.visits = visits;
-  
+
   // Use the already-validated played_idx (or 0 if invalid)
   result.played_idx = (played_idx < 1858) ? played_idx : 0;
-  
+
   // best_idx with bounds check
   uint16_t best_idx = lczero::MoveToNNIndex(best_move, 0);
   result.best_idx = (best_idx < 1858) ? best_idx : result.played_idx;
-  
+
   // Policy KLD - not applicable for supervised data
   result.policy_kld = 0.0f;
-  
+
   // Reserved
   result.reserved = 0;
 

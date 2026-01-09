@@ -26,6 +26,7 @@ size_t dedup_uniq_buffersize = 50000;
 float dedup_q_ratio = 1.0f;
 std::string stockfish_path;
 int sf_depth = 10;
+std::string output_prefix = "supervised-";
 
 inline bool file_exists(const std::string &name) {
   auto s = std::filesystem::status(name);
@@ -38,11 +39,11 @@ inline bool directory_exists(const std::string &name) {
 }
 
 void convert_games(const std::string &pgn_file_name, Options options,
-                   StockfishEvaluator* evaluator) {
+                   StockfishEvaluator *evaluator, const std::string &prefix) {
   int game_id = 0;
   pgn_t pgn[1];
   pgn_open(pgn, pgn_file_name.c_str());
-  TrainingDataWriter writer(max_files_per_directory, chunks_per_file);
+  TrainingDataWriter writer(max_files_per_directory, chunks_per_file, prefix);
   while (pgn_next_game(pgn) && game_id < max_games_to_convert) {
     PGNGame game(pgn);
     writer.EnqueueChunks(game.getChunks(options, evaluator, sf_depth));
@@ -62,7 +63,7 @@ int main(int argc, char *argv[]) {
   polyglot_init();
   Options options;
   bool deduplication_mode = false;
-  
+
   for (size_t idx = 0; idx < argc; ++idx) {
     if (0 == static_cast<std::string>("-v").compare(argv[idx])) {
       std::cout << "Verbose mode ON" << std::endl;
@@ -71,13 +72,11 @@ int main(int argc, char *argv[]) {
                static_cast<std::string>("-lichess-mode").compare(argv[idx])) {
       std::cout << "Lichess mode ON" << std::endl;
       options.lichess_mode = true;
-    } else if (0 ==
-               static_cast<std::string>("-stockfish").compare(argv[idx])) {
+    } else if (0 == static_cast<std::string>("-stockfish").compare(argv[idx])) {
       stockfish_path = argv[idx + 1];
       std::cout << "Stockfish mode ON, binary: " << stockfish_path << std::endl;
       options.stockfish_mode = true;
-    } else if (0 ==
-               static_cast<std::string>("-sf-depth").compare(argv[idx])) {
+    } else if (0 == static_cast<std::string>("-sf-depth").compare(argv[idx])) {
       sf_depth = std::atoi(argv[idx + 1]);
       std::cout << "Stockfish depth set to: " << sf_depth << std::endl;
     } else if (0 ==
@@ -108,6 +107,9 @@ int main(int argc, char *argv[]) {
       dedup_q_ratio = std::stof(argv[idx + 1]);
       std::cout << "Deduplication Q ratio set to: " << dedup_q_ratio
                 << std::endl;
+    } else if (0 == static_cast<std::string>("-output").compare(argv[idx])) {
+      output_prefix = argv[idx + 1];
+      std::cout << "Output prefix set to: " << output_prefix << std::endl;
     }
   }
 
@@ -122,30 +124,32 @@ int main(int argc, char *argv[]) {
     std::cout << "Stockfish initialized successfully." << std::endl;
   }
 
-  TrainingDataWriter writer(max_files_per_directory, chunks_per_file, "deduped-");
+  TrainingDataWriter writer(max_files_per_directory, chunks_per_file,
+                            "deduped-");
   for (size_t idx = 1; idx < argc; ++idx) {
     std::string arg = argv[idx];
     // Skip option flags and their values
     if (arg[0] == '-') {
       // Skip the value for options that take a parameter
-      if (arg == "-stockfish" || arg == "-sf-depth" || arg == "-files-per-dir" ||
-          arg == "-max-games-to-convert" || arg == "-chunks-per-file" ||
-          arg == "-dedup-uniq-buffersize" || arg == "-dedup-q-ratio") {
+      if (arg == "-stockfish" || arg == "-sf-depth" ||
+          arg == "-files-per-dir" || arg == "-max-games-to-convert" ||
+          arg == "-chunks-per-file" || arg == "-dedup-uniq-buffersize" ||
+          arg == "-dedup-q-ratio" || arg == "-output") {
         ++idx;  // Skip the next argument (the value)
       }
       continue;
     }
-    
+
     if (deduplication_mode) {
       if (!directory_exists(argv[idx])) continue;
       TrainingDataReader reader(argv[idx]);
       training_data_dedup(reader, writer, dedup_uniq_buffersize, dedup_q_ratio);
     } else {
       if (!file_exists(argv[idx])) continue;
-      
+
       // Check for .pgn extension (simple case-insensitive check)
       std::string path = argv[idx];
-      if (path.length() < 4 || 
+      if (path.length() < 4 ||
           (strcasecmp(path.substr(path.length() - 4).c_str(), ".pgn") != 0)) {
         if (options.verbose) {
           std::cout << "Skipping non-PGN file: " << path << std::endl;
@@ -156,7 +160,7 @@ int main(int argc, char *argv[]) {
       if (options.verbose) {
         std::cout << "Opening '" << argv[idx] << "'" << std::endl;
       }
-      convert_games(argv[idx], options, evaluator.get());
+      convert_games(argv[idx], options, evaluator.get(), output_prefix);
     }
   }
 }
