@@ -1,21 +1,21 @@
 #include "trainingdata.h"
 #include "utils/bititer.h"
 
-#include <cstring>
 #include <algorithm>
+#include <cstring>
 #include <iostream>
 
 namespace lczero {
 // Remove ambiguous forward declaration
 }
 
-// Minimal implementation if not linked (it should be linked from lc0 utils, but to be safe)
-// Actually lc0 has it in utils/bitmanip.h -> utils/bititer.h
+// Minimal implementation if not linked (it should be linked from lc0 utils, but
+// to be safe) Actually lc0 has it in utils/bitmanip.h -> utils/bititer.h
 
 lczero::V6TrainingData get_v6_training_data(
-        lczero::GameResult game_result, const lczero::PositionHistory& history,
-        lczero::Move played_move, lczero::MoveList legal_moves, float Q,
-        lczero::Move best_move, uint32_t visits) {
+    lczero::GameResult game_result, const lczero::PositionHistory& history,
+    lczero::Move played_move, lczero::MoveList legal_moves, float Q,
+    lczero::Move best_move, uint32_t visits) {
   lczero::V6TrainingData result;
   std::memset(&result, 0, sizeof(result));
 
@@ -29,7 +29,7 @@ lczero::V6TrainingData get_v6_training_data(
     probability = -1.0f;
   }
 
-  // Legal moves to 0  
+  // Legal moves to 0
   for (lczero::Move move : legal_moves) {
     uint16_t idx = lczero::MoveToNNIndex(move, 0);
     if (idx < 1858) {
@@ -42,11 +42,12 @@ lczero::V6TrainingData get_v6_training_data(
   if (played_idx < 1858) {
     result.probabilities[played_idx] = 1.0f;
   } else {
-    // Invalid move - this shouldn't happen but prevents crash
-    // Log warning in debug builds
-    #ifndef NDEBUG
-    std::cerr << "Warning: Invalid played_move index " << played_idx << " (max 1857)" << std::endl;
-    #endif
+// Invalid move - this shouldn't happen but prevents crash
+// Log warning in debug builds
+#ifndef NDEBUG
+    std::cerr << "Warning: Invalid played_move index " << played_idx
+              << " (max 1857)" << std::endl;
+#endif
   }
 
   // Populate planes
@@ -56,7 +57,7 @@ lczero::V6TrainingData get_v6_training_data(
 
   // V6 stores first 104 planes (8 history * 13 planes)
   for (size_t i = 0; i < 104 && i < planes.size(); ++i) {
-    result.planes[i] = planes[i].mask;
+    result.planes[i] = lczero::ReverseBitsInBytes(planes[i].mask);
   }
 
   const auto& position = history.Last();
@@ -70,17 +71,11 @@ lczero::V6TrainingData get_v6_training_data(
 
   // Side to move and enpassant
   result.side_to_move_or_enpassant = 0;
-  if (!position.GetBoard().en_passant().empty()) {
-      int idx = static_cast<int>(lczero::GetLowestBit(position.GetBoard().en_passant().as_int()));
-      int file = idx % 8;
-      result.side_to_move_or_enpassant = (1 << file);
+  if (position.IsBlackToMove()) {
+    result.side_to_move_or_enpassant = 1;
   }
 
   result.invariance_info = 0;
-  if (position.IsBlackToMove()) {
-     result.invariance_info |= (1 << 7);
-  }
-  result.invariance_info |= (transform & 0x7);
 
   result.rule50_count = position.GetRule50Ply();
 
@@ -92,16 +87,16 @@ lczero::V6TrainingData get_v6_training_data(
     res_q = position.IsBlackToMove() ? 1.0f : -1.0f;
   }
   result.result_q = res_q;
-  
+
   // Q values - store directly (relative to side-to-move)
   result.root_q = result.best_q = Q;
-  
+
   // Set visits
   result.visits = visits;
-  
+
   // Use the already-validated played_idx (or 0 if invalid)
   result.played_idx = (played_idx < 1858) ? played_idx : 0;
-  
+
   // best_idx with bounds check
   uint16_t best_idx = lczero::MoveToNNIndex(best_move, 0);
   result.best_idx = (best_idx < 1858) ? best_idx : result.played_idx;
