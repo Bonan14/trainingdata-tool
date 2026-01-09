@@ -34,7 +34,7 @@ bool extract_lichess_comment_score(const char* comment, float& Q) {
   return false;
 }
 
-lczero::Move poly_move_to_lc0_move(move_t move, board_t* board) {
+lczero::Move poly_move_to_lc0_move(move_t move, board_t* board, bool is_black_move) {
   // IMPORTANT: move_from() and move_to() return polyglot 0x88 format squares
   // lczero::Square::FromIdx() expects 0-63 indices
   // Use square_to_64() to convert from 0x88 to 0-63
@@ -58,20 +58,27 @@ lczero::Move poly_move_to_lc0_move(move_t move, board_t* board) {
       case 4: prom_type = lczero::kQueen; break;
     }
     m = lczero::Move::WhitePromotion(from, to, prom_type);
+    // Need to flip for black moves (except castling)
+    if (is_black_move) {
+      m.Flip();
+    }
   } else if (move_is_castle(move, board)) {
-    // Determine rook file based on target square
-    // Kingside: to > from (e.g. g1 > e1) -> Rook on H (file 7)
-    // Queenside: to < from (e.g. c1 < e1) -> Rook on A (file 0)
+    // For castling, files don't change with perspective, only ranks do
+    // So castling is already in the correct orientation
     lczero::File rook_file = (to.file().idx > from.file().idx) ? lczero::kFileH : lczero::kFileA;
     m = lczero::Move::WhiteCastling(from.file(), rook_file);
+    // Don't flip castling moves - they're perspective-independent
   } else {
     m = lczero::Move::White(from, to);
+    // Lc0's board is always kept from white's perspective internally.
+    // After ApplyMove(), Position::Mirror() is called to switch perspective.
+    // When is_black_move is true, the polyglot board is from black's perspective
+    // (after the previous mirror), so we need to flip the move coordinates to
+    // white's perspective before applying it in lc0.
+    if (is_black_move) {
+      m.Flip();
+    }
   }
-
-  // NOTE: Do NOT call m.Flip() for black pieces!
-  // Lc0's board is always kept from white's perspective.
-  // After ApplyMove(), Position::Mirror() is called to switch perspective.
-  // The move must always be from white's perspective (actual board squares).
 
   return m;
 }
@@ -186,7 +193,9 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(Options options) const {
       }
     }
 
-    lczero::Move lc0_move = poly_move_to_lc0_move(move, board);
+    // Determine if it's black's move by checking if the position history indicates so
+    bool is_black_move = position_history.IsBlackToMove();
+    lczero::Move lc0_move = poly_move_to_lc0_move(move, board, is_black_move);
 
     auto legal_moves = position_history.Last().GetBoard().GenerateLegalMoves();
 
