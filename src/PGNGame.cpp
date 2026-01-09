@@ -1,4 +1,5 @@
 #include "PGNGame.h"
+#include "StaticEvaluator.h"
 #include "StockfishEvaluator.h"
 #include "trainingdata.h"
 
@@ -212,6 +213,8 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(Options options,
 
     lczero::Move lc0_move = poly_move_to_lc0_move(move, board);
 
+    auto legal_moves = position_history.Last().GetBoard().GenerateLegalMoves();
+
     // Evaluation
     float Q = 0.0f;
     uint32_t visits = 1;
@@ -241,9 +244,14 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(Options options,
       } else if (options.verbose) {
         std::cout << "No Lichess comment for move \"" << pgn_move.move << "\" – skipping eval" << std::endl;
       }
+    } else {
+      // Normal mode: use static evaluation
+      int cp = StaticEvaluator::evaluate(board);
+      Q = StaticEvaluator::cpToWinProbability(cp);
+      if (options.verbose) {
+        std::cout << "Static eval: " << cp << " cp, Q=" << Q << std::endl;
+      }
     }
-
-    auto legal_moves = position_history.Last().GetBoard().GenerateLegalMoves();
     
     // Resolve best_move
     lczero::Move best_move = lczero::Move();
