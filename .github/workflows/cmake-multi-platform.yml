@@ -86,31 +86,3 @@ jobs:
           ${{ steps.strings.outputs.build-output-dir }}/trainingdata-tool
           ${{ steps.strings.outputs.build-output-dir }}/trainingdata-tool.exe
         if-no-files-found: ignore
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    permissions:
-      contents: write
-    
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
-
-    - name: Create timestamp
-      id: timestamp
-      run: echo "time=$(date +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
-
-    - name: Create Pre-release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: pre-release-${{ steps.timestamp.outputs.time }}
-        name: Pre-release ${{ steps.timestamp.outputs.time }}
-        prerelease: true
-        files: artifacts/**/*
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
