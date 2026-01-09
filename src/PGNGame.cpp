@@ -264,8 +264,12 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(Options options,
         best_move = lc0_move;
     }
 
+    // Note: plies_left is calculated as placeholder here (0).
+    // It will be updated in post-processing after we know total game length.
+    int plies_left_placeholder = 0;
+    
     lczero::V6TrainingData chunk = get_v6_training_data(
-        game_result, position_history, lc0_move, legal_moves, Q, best_move, visits);
+        game_result, position_history, lc0_move, legal_moves, Q, best_move, visits, plies_left_placeholder);
     chunks.push_back(chunk);
     if (options.verbose) {
       std::string result;
@@ -286,20 +290,27 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(Options options,
     uci_moves.push_back(poly_move_to_uci(move));
   }
 
-  // Post-process chunks to update root_q (eval of played move)
+  // Post-process chunks to update root_q (eval of played move) and plies_left (MLH)
   // Logic: The position after playing the move is the next chunk's position.
   // The eval of next chunk (best_q) is from opponent's perspective.
   // So value of played move for us is -next_chunk.best_q.
   
   if (!chunks.empty()) {
-      for (size_t i = 0; i < chunks.size() - 1; ++i) {
-          chunks[i].root_q = -chunks[i+1].best_q;
+      int total_plies = static_cast<int>(chunks.size());
+      for (size_t i = 0; i < chunks.size(); ++i) {
+          // MLH: plies remaining until game end
+          float plies_left = static_cast<float>(total_plies - i - 1);
+          chunks[i].plies_left = plies_left;
+          chunks[i].root_m = plies_left;
+          chunks[i].best_m = plies_left;
+          chunks[i].played_m = plies_left;
+          
+          // Update root_q (played move eval) from next position
+          if (i < chunks.size() - 1) {
+              chunks[i].root_q = -chunks[i+1].best_q;
+          }
       }
-      // For the last chunk, we don't have a next position eval.
-      // Use result_q (game result) as the fallback for "played move value"?
-      // Or keep it as best_q if we assume last move was reasonable?
-      // Lc0 usually trains on result_q heavily.
-      // Let's set it to result_q to be consistent with "outcome".
+      // For the last chunk, set root_q to result_q
       chunks.back().root_q = chunks.back().result_q;
   }
 

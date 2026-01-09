@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 
 namespace lczero {
 // Remove ambiguous forward declaration
@@ -14,7 +15,7 @@ namespace lczero {
 lczero::V6TrainingData get_v6_training_data(
         lczero::GameResult game_result, const lczero::PositionHistory& history,
         lczero::Move played_move, lczero::MoveList legal_moves, float Q,
-        lczero::Move best_move, uint32_t visits) {
+        lczero::Move best_move, uint32_t visits, int plies_left) {
   lczero::V6TrainingData result;
   std::memset(&result, 0, sizeof(result));
 
@@ -58,7 +59,6 @@ lczero::V6TrainingData get_v6_training_data(
   // Side to move and enpassant
   result.side_to_move_or_enpassant = 0;
   if (!position.GetBoard().en_passant().empty()) {
-      // GetLowestBit returns unsigned long, cast to int for modulus
       int idx = static_cast<int>(lczero::GetLowestBit(position.GetBoard().en_passant().as_int()));
       int file = idx % 8;
       result.side_to_move_or_enpassant = (1 << file);
@@ -72,25 +72,57 @@ lczero::V6TrainingData get_v6_training_data(
 
   result.rule50_count = position.GetRule50Ply();
 
-  // Result
+  // Result Q and D
   float res_q = 0.0f;
+  float res_d = 0.0f;
   if (game_result == lczero::GameResult::WHITE_WON) {
     res_q = position.IsBlackToMove() ? -1.0f : 1.0f;
+    res_d = 0.0f;
   } else if (game_result == lczero::GameResult::BLACK_WON) {
     res_q = position.IsBlackToMove() ? 1.0f : -1.0f;
+    res_d = 0.0f;
+  } else {
+    // Draw
+    res_q = 0.0f;
+    res_d = 1.0f;
   }
   result.result_q = res_q;
+  result.result_d = res_d;
   
-  // Q values
-  // Store Q directly (relative to side-to-move), as expected by training data
-  // PGNGame passes Q as side-to-move probability from Stockfish
+  // Q values (relative to side-to-move)
   result.root_q = result.best_q = Q;
+  
+  // D values (draw probability) - Stockfish WDL gives us this but we don't have it in current impl
+  // Set to 0 for now, can be enhanced later with WDL parsing
+  result.root_d = result.best_d = 0.0f;
+  
+  // M values (moves left estimate from engine) - placeholder
+  result.root_m = result.best_m = static_cast<float>(plies_left);
+  
+  // plies_left is the MLH training target
+  result.plies_left = static_cast<float>(plies_left);
+  
+  // Played move values (set same as root for supervised)
+  result.played_q = Q;
+  result.played_d = 0.0f;
+  result.played_m = static_cast<float>(plies_left);
+  
+  // Orig values (for value repair) - set to NaN as we don't have cache
+  result.orig_q = std::nanf("");
+  result.orig_d = std::nanf("");
+  result.orig_m = std::nanf("");
   
   // Set visits
   result.visits = visits;
   
   result.played_idx = lczero::MoveToNNIndex(played_move, 0);
   result.best_idx = lczero::MoveToNNIndex(best_move, 0);
+  
+  // Policy KLD - not applicable for supervised data
+  result.policy_kld = 0.0f;
+  
+  // Reserved
+  result.reserved = 0;
 
   return result;
 }

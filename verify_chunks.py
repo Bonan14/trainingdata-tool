@@ -144,7 +144,7 @@ def main():
         for i, move in enumerate(moves):
             # Reverse increment for MLH (Moves Left Head): plies remaining until game end
             plies_left = num_moves - i - 1
-            print(f"  Move {i}: PliesLeft={plies_left}, Version={move['version']}, Format={move['input_format']}, "
+            print(f"  Move {i} (MoveId={move['played_idx']}): PliesLeft={plies_left}, Version={move['version']}, Format={move['input_format']}, "
                   f"ResultQ={move['result_q']:.4f}, RootQ={move['root_q']:.4f}, BestQ={move['best_q']:.4f}, "
                   f"PlayedIdx={move['played_idx']}, BestIdx={move['best_idx']}, Visits={move['visits']}, "
                   f"Rule50={move['rule50']}, Castling={move['castling']}")

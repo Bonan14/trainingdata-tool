@@ -8,6 +8,6 @@
 lczero::V6TrainingData get_v6_training_data(
         lczero::GameResult game_result, const lczero::PositionHistory& history,
         lczero::Move played_move, lczero::MoveList legal_moves, float Q,
-        lczero::Move best_move, uint32_t visits);
+        lczero::Move best_move, uint32_t visits, int plies_left);
 
 #endif
