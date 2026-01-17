@@ -71,6 +71,16 @@ lczero::Move poly_move_to_lc0_move(move_t move, board_t* board,
     if (is_black_move) {
       m.Flip();
     }
+  } else if (move_is_en_passant(move, board)) {
+    m = lczero::Move::WhiteEnPassant(from, to);
+    // Lc0's board is always kept from white's perspective internally.
+    // After ApplyMove(), Position::Mirror() is called to switch perspective.
+    // When is_black_move is true, the polyglot board is from black's
+    // perspective (after the previous mirror), so we need to flip the move
+    // coordinates to white's perspective before applying it in lc0.
+    if (is_black_move) {
+      m.Flip();
+    }
   } else if (move_is_castle(move, board)) {
     // For castling, files don't change with perspective, only ranks do
     // So castling is already in the correct orientation
@@ -78,11 +88,9 @@ lczero::Move poly_move_to_lc0_move(move_t move, board_t* board,
         (to.file().idx > from.file().idx) ? lczero::kFileH : lczero::kFileA;
     m = lczero::Move::WhiteCastling(from.file(), rook_file);
     // Don't flip castling moves - they're perspective-independent
-    if (move_is_en_passant(move, board)) {
-      m = lczero::Move::WhiteEnPassant(from, to);
-    } else {
-      m = lczero::Move::White(from, to);
-    }
+  } else {
+    // Regular move
+    m = lczero::Move::White(from, to);
     // Lc0's board is always kept from white's perspective internally.
     // After ApplyMove(), Position::Mirror() is called to switch perspective.
     // When is_black_move is true, the polyglot board is from black's
@@ -97,8 +105,12 @@ lczero::Move poly_move_to_lc0_move(move_t move, board_t* board,
 }
 
 PGNGame::PGNGame(pgn_t* pgn) {
-  strncpy(this->result, pgn->result, PGN_STRING_SIZE);
-  strncpy(this->fen, pgn->fen, PGN_STRING_SIZE);
+  // Safe string copying with proper null termination
+  strncpy(this->result, pgn->result, PGN_STRING_SIZE - 1);
+  this->result[PGN_STRING_SIZE - 1] = '\0';
+  
+  strncpy(this->fen, pgn->fen, PGN_STRING_SIZE - 1);
+  this->fen[PGN_STRING_SIZE - 1] = '\0';
 
   char str[256];
   while (pgn_next_move(pgn, str, 256)) {

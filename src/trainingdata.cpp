@@ -16,18 +16,17 @@ lczero::V6TrainingData get_v6_training_data(
     lczero::GameResult game_result, const lczero::PositionHistory& history,
     lczero::Move played_move, lczero::MoveList legal_moves, float Q,
     lczero::Move best_move, uint32_t visits) {
-  lczero::V6TrainingData result;
-  std::memset(&result, 0, sizeof(result));
+  lczero::V6TrainingData result{};
+  
+  // Initialize all probabilities to -1 (illegal moves)
+  std::fill(std::begin(result.probabilities), std::end(result.probabilities), -1.0f);
 
   result.version = 6;
   // Use Classical 112 plane format
   auto input_format = pblczero::NetworkFormat::INPUT_CLASSICAL_112_PLANE;
   result.input_format = input_format;
 
-  // Initialize probabilities to -1 (illegal)
-  for (auto& probability : result.probabilities) {
-    probability = -1.0f;
-  }
+  // Note: probabilities already initialized to -1.0f above
 
   // Legal moves to 0
   for (lczero::Move move : legal_moves) {

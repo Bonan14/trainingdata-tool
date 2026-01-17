@@ -7,12 +7,26 @@
 // Static position evaluator for normal mode (no engine)
 // Returns evaluation in centipawns from side-to-move perspective
 
+/**
+ * @brief Static position evaluator for chess positions
+ * 
+ * Provides material-based evaluation with piece-square tables,
+ * pawn structure analysis, and mobility evaluation.
+ */
 class StaticEvaluator {
-public:
-  // Evaluate position, returns centipawns from side-to-move perspective
+ public:
+  /**
+   * @brief Evaluate position, returns centipawns from side-to-move perspective
+   * @param board Pointer to polyglot board structure
+   * @return Evaluation in centipawns (positive = better for side to move)
+   */
   static int evaluate(board_t* board);
   
-  // Convert centipawns to win probability in [-1, 1] range
+  /**
+   * @brief Convert centipawns to win probability in [-1, 1] range
+   * @param cp Evaluation in centipawns
+   * @return Win probability where 1.0 = certain win, -1.0 = certain loss
+   */
   static float cpToWinProbability(int cp);
 
 private:
