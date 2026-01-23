@@ -104,4 +104,44 @@ elseif (MINGW)
     )
 endif()
 
+# Optional: Add Doxygen documentation support
+find_package(Doxygen QUIET)
+if (DOXYGEN_FOUND)
+    # Set input and output directories
+    set(DOXYGEN_INPUT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    set(DOXYGEN_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/docs)
+    
+    # Configure Doxygen
+    set(DOXYGEN_PROJECT_NAME "Training Data Tool")
+    set(DOXYGEN_PROJECT_BRIEF "Tool to generate lc0 training data from PGN files")
+    set(DOXYGEN_OUTPUT_HTML YES)
+    set(DOXYGEN_OUTPUT_LATEX NO)
+    set(DOXYGEN_RECURSIVE YES)
+    set(DOXYGEN_EXTRACT_ALL YES)
+    set(DOXYGEN_EXTRACT_STATIC YES)
+    set(DOXYGEN_EXTRACT_PRIVATE YES)
+    set(DOXYGEN_EXTRACT_PRIV_VIRTUAL YES)
+    set(DOXYGEN_GENERATE_TODOLIST YES)
+    set(DOXYGEN_GENERATE_BUGLIST YES)
+    
+    # Create custom target for documentation
+    add_custom_target(docs
+        COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        COMMENT "Generating API documentation with Doxygen"
+        VERBATIM
+    )
+    
+    # Configure the Doxyfile
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile.in
+        ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile
+        @ONLY
+    )
+    
+    message(STATUS "Doxygen found - documentation target 'docs' available")
+else()
+    message(STATUS "Doxygen not found - documentation generation disabled")
+endif()
+
 # TODO: Add tests and install targets if needed.
