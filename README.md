@@ -42,6 +42,11 @@ Pass PGN input files and it will output training data in the same way lc0 selfpl
 | `-max-games-to-convert <N>` | Limit number of games to process |
 | `-chunks-per-file <N>` | Chunks per output file in deduplication mode only; PGN conversion always writes one game per file |
 | `-deduplication-mode` | Deduplicate existing training data |
+| `-dedup-uniq-buffersize <N>` | Unique buffer size for deduplication mode (default: 50000) |
+| `-dedup-q-ratio <F>` | Q-ratio threshold used during deduplication (default: 1.0) |
+| `-output <prefix>` | Output prefix for generated training data files (default: `supervised-`) |
+
+By default, the tool uses static evaluation unless `-stockfish` or `-lichess-mode` is enabled.
 
 ### Examples
 
