@@ -112,11 +112,7 @@ jobs:
           [ -f "$file" ] || continue
           artifact_name="$(basename "$(dirname "$file")")"
           basename_file="$(basename "$file")"
-          extension=""
-          if [[ "$basename_file" == *.* ]]; then
-            extension=".${basename_file##*.}"
-          fi
-          cp "$file" "release-assets/${artifact_name}${extension}"
+          cp "$file" "release-assets/${artifact_name}-${basename_file}"
         done
 
     - name: Create Pre-release
