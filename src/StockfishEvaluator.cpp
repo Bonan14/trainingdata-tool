@@ -148,9 +148,13 @@ bool StockfishEvaluator::init() {
   }
 
   child_pid_ = fork();
-  
+
   if (child_pid_ < 0) {
     std::cerr << "Failed to fork" << std::endl;
+    close(stdin_pipe[0]);
+    close(stdin_pipe[1]);
+    close(stdout_pipe[0]);
+    close(stdout_pipe[1]);
     return false;
   }
   
@@ -184,9 +188,10 @@ bool StockfishEvaluator::init() {
   
   write_fd_ = stdin_pipe[1];
   read_fd_ = stdout_pipe[0];
-  
-  // Make read non-blocking for timeout handling
-  // fcntl(read_fd_, F_SETFL, fcntl(read_fd_, F_GETFL) | O_NONBLOCK);
+
+  // Make read non-blocking so readLine() never blocks past the data that
+  // select() reported as available.
+  fcntl(read_fd_, F_SETFL, fcntl(read_fd_, F_GETFL) | O_NONBLOCK);
   
   // Initialize UCI
   sendCommand("uci");
@@ -447,26 +452,50 @@ std::string StockfishEvaluator::readLine() {
   return line;
 #else
   if (read_fd_ < 0) return "";
-  
+
+  // Return a buffered complete line first so leftovers are never missed.
+  size_t buffered_newline = read_buffer_.find('\n');
+  if (buffered_newline != std::string::npos) {
+    std::string line = read_buffer_.substr(0, buffered_newline);
+    read_buffer_.erase(0, buffered_newline + 1);
+    while (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    return line;
+  }
+
   // Use select to check if data is available (with 100ms timeout)
   fd_set read_fds;
   FD_ZERO(&read_fds);
   FD_SET(read_fd_, &read_fds);
-  
+
   struct timeval tv;
   tv.tv_sec = 0;
   tv.tv_usec = 100000;  // 100ms timeout
-  
+
   int ret = select(read_fd_ + 1, &read_fds, nullptr, nullptr, &tv);
   if (ret <= 0) {
     return "";  // Timeout or error
   }
-  
-  std::string line;
-  char c;
-  while (read(read_fd_, &c, 1) == 1) {
-    if (c == '\n') break;
-    if (c != '\r') line += c;
+
+  // read_fd_ is non-blocking: accumulate whatever is currently available into
+  // the persistent buffer and return a line only once a newline arrives.
+  char buf[4096];
+  while (true) {
+    ssize_t n = read(read_fd_, buf, sizeof(buf));
+    if (n <= 0) break;  // EAGAIN (would block) or EOF/error
+    read_buffer_.append(buf, static_cast<size_t>(n));
+    if (n < static_cast<ssize_t>(sizeof(buf))) break;
+  }
+
+  size_t newline = read_buffer_.find('\n');
+  if (newline == std::string::npos) {
+    return "";  // No complete line yet
+  }
+  std::string line = read_buffer_.substr(0, newline);
+  read_buffer_.erase(0, newline + 1);
+  while (!line.empty() && line.back() == '\r') {
+    line.pop_back();
   }
   return line;
 #endif

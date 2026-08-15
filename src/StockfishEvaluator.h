@@ -57,6 +57,7 @@ class StockfishEvaluator {
  private:
   std::string stockfish_path_;
   int hash_mb_;
+  std::string read_buffer_;
 
 #ifdef _WIN32
   HANDLE process_handle_;
