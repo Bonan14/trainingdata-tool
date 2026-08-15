@@ -111,9 +111,10 @@ jobs:
         for file in artifacts/*/*; do
           [ -f "$file" ] || continue
           artifact_name="$(basename "$(dirname "$file")")"
+          basename_file="$(basename "$file")"
           extension=""
-          if [[ "$(basename "$file")" == *.* ]]; then
-            extension=".${file##*.}"
+          if [[ "$basename_file" == *.* ]]; then
+            extension=".${basename_file##*.}"
           fi
           cp "$file" "release-assets/${artifact_name}${extension}"
         done
