@@ -104,13 +104,27 @@ jobs:
       id: timestamp
       run: echo "time=$(date +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
 
+    - name: Prepare release assets
+      shell: bash
+      run: |
+        mkdir -p release-assets
+        for file in artifacts/*/*; do
+          [ -f "$file" ] || continue
+          artifact_name="$(basename "$(dirname "$file")")"
+          extension=""
+          if [[ "$(basename "$file")" == *.* ]]; then
+            extension=".${file##*.}"
+          fi
+          cp "$file" "release-assets/${artifact_name}${extension}"
+        done
+
     - name: Create Pre-release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: pre-release-${{ steps.timestamp.outputs.time }}
         name: Pre-release ${{ steps.timestamp.outputs.time }}
         prerelease: true
-        files: artifacts/**/*
+        files: release-assets/*
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
