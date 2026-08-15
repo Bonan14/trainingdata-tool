@@ -99,15 +99,17 @@ int StaticEvaluator::getPhase(board_t* board) {
   // Phase: 24 = opening, 0 = endgame
   // Each minor = 1, each rook = 2, each queen = 4
   int phase = 0;
-  
+
   for (int sq = 0; sq < 64; sq++) {
-    int piece = board->square[sq];
+    int raw = board->square[square_from_64(sq)];
+    if (raw == Empty) continue;
+    int piece = piece_to_12(raw);
     if (piece == WhiteKnight12 || piece == BlackKnight12) phase += 1;
     if (piece == WhiteBishop12 || piece == BlackBishop12) phase += 1;
     if (piece == WhiteRook12 || piece == BlackRook12) phase += 2;
     if (piece == WhiteQueen12 || piece == BlackQueen12) phase += 4;
   }
-  
+
   return std::min(phase, 24);
 }
 
@@ -116,7 +118,9 @@ int StaticEvaluator::evaluateMaterial(board_t* board) {
   int whiteBishops = 0, blackBishops = 0;
   
   for (int sq = 0; sq < 64; sq++) {
-    int piece = board->square[sq];
+    int raw = board->square[square_from_64(sq)];
+    if (raw == Empty) continue;
+    int piece = piece_to_12(raw);
     switch (piece) {
       case WhitePawn12:   score += PAWN_VALUE; break;
       case BlackPawn12:   score -= PAWN_VALUE; break;
@@ -142,7 +146,9 @@ int StaticEvaluator::evaluatePST(board_t* board, int phase) {
   int scoreMG = 0, scoreEG = 0;
   
   for (int sq = 0; sq < 64; sq++) {
-    int piece = board->square[sq];
+    int raw = board->square[square_from_64(sq)];
+    if (raw == Empty) continue;
+    int piece = piece_to_12(raw);
     int whiteSq = sq;           // For white pieces
     int blackSq = sq ^ 56;      // Flip for black (mirror vertically)
     
@@ -211,13 +217,16 @@ int StaticEvaluator::evaluatePawnStructure(board_t* board) {
   int whitePawnsPerFile[8] = {0};
   int blackPawnsPerFile[8] = {0};
   int whitePawnRanks[8] = {0};  // Most advanced white pawn per file
-  int blackPawnRanks[8] = {7};  // Most advanced black pawn per file
-  
+  int blackPawnRanks[8];        // Most advanced black pawn per file
+  std::fill_n(blackPawnRanks, 8, 7);
+
   for (int sq = 0; sq < 64; sq++) {
     int file = sq % 8;
     int rank = sq / 8;
-    int piece = board->square[sq];
-    
+    int raw = board->square[square_from_64(sq)];
+    if (raw == Empty) continue;
+    int piece = piece_to_12(raw);
+
     if (piece == WhitePawn12) {
       whitePawnsPerFile[file]++;
       whitePawnRanks[file] = std::max(whitePawnRanks[file], rank);
@@ -253,7 +262,7 @@ int StaticEvaluator::evaluatePawnStructure(board_t* board) {
     if (whitePawnsPerFile[file] > 0) {
       bool passed = true;
       for (int f = std::max(0, file-1); f <= std::min(7, file+1); f++) {
-        if (blackPawnRanks[f] > whitePawnRanks[file]) {
+        if (blackPawnsPerFile[f] > 0 && blackPawnRanks[f] > whitePawnRanks[file]) {
           passed = false;
           break;
         }
@@ -267,7 +276,7 @@ int StaticEvaluator::evaluatePawnStructure(board_t* board) {
     if (blackPawnsPerFile[file] > 0) {
       bool passed = true;
       for (int f = std::max(0, file-1); f <= std::min(7, file+1); f++) {
-        if (whitePawnRanks[f] < blackPawnRanks[file]) {
+        if (whitePawnsPerFile[f] > 0 && whitePawnRanks[f] < blackPawnRanks[file]) {
           passed = false;
           break;
         }
@@ -289,7 +298,9 @@ int StaticEvaluator::evaluateMobility(board_t* board) {
   
   // Count piece mobility (simplified - just based on piece presence)
   for (int sq = 0; sq < 64; sq++) {
-    int piece = board->square[sq];
+    int raw = board->square[square_from_64(sq)];
+    if (raw == Empty) continue;
+    int piece = piece_to_12(raw);
     int file = sq % 8;
     int rank = sq / 8;
     
