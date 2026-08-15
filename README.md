@@ -34,7 +34,6 @@ Pass PGN input files and it will output training data in the same way lc0 selfpl
 | Option | Description |
 |--------|-------------|
 | `-v` | Verbose mode - shows detailed progress |
-| `-staticeval` | Use static evaluation for move scores (default mode when no explicit evaluation source is selected) |
 | `-lichess-mode` | Extract SF eval scores from Lichess commented games |
 | `-stockfish <path>` | Use Stockfish binary to evaluate positions |
 | `-sf-depth <N>` | Stockfish search depth (default: 10) |
@@ -46,6 +45,8 @@ Pass PGN input files and it will output training data in the same way lc0 selfpl
 | `-dedup-uniq-buffersize <N>` | Unique buffer size for deduplication mode (default: 50000) |
 | `-dedup-q-ratio <F>` | Q-ratio threshold used during deduplication (default: 1.0) |
 | `-output <prefix>` | Output prefix for generated training data files (default: `supervised-`) |
+
+By default, the tool uses static evaluation unless `-stockfish` or `-lichess-mode` is enabled.
 
 ### Examples
 
