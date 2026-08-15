@@ -26,6 +26,7 @@ size_t dedup_uniq_buffersize = 50000;
 float dedup_q_ratio = 1.0f;
 std::string stockfish_path;
 int sf_depth = 10;
+int sf_hash_mb = 128;
 std::string output_prefix = "supervised-";
 
 inline bool file_exists(const std::string &name) {
@@ -73,12 +74,42 @@ int main(int argc, char *argv[]) {
       std::cout << "Lichess mode ON" << std::endl;
       options.lichess_mode = true;
     } else if (0 == static_cast<std::string>("-stockfish").compare(argv[idx])) {
-      stockfish_path = argv[idx + 1];
+      if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
+        std::cerr << "Error: -stockfish requires a path argument." << std::endl;
+        return 1;
+      }
+      stockfish_path = argv[++idx];
       std::cout << "Stockfish mode ON, binary: " << stockfish_path << std::endl;
       options.stockfish_mode = true;
     } else if (0 == static_cast<std::string>("-sf-depth").compare(argv[idx])) {
-      sf_depth = std::atoi(argv[idx + 1]);
+      if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
+        std::cerr << "Error: -sf-depth requires a positive integer argument."
+                  << std::endl;
+        return 1;
+      }
+      const char* depth_arg = argv[++idx];
+      sf_depth = std::atoi(depth_arg);
+      if (sf_depth <= 0) {
+        std::cerr << "Error: -sf-depth must be a positive integer, got '"
+                  << depth_arg << "'." << std::endl;
+        return 1;
+      }
       std::cout << "Stockfish depth set to: " << sf_depth << std::endl;
+    } else if (0 == static_cast<std::string>("-sf-hash").compare(argv[idx])) {
+      if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
+        std::cerr << "Error: -sf-hash requires a positive integer argument."
+                  << std::endl;
+        return 1;
+      }
+      const char* hash_arg = argv[++idx];
+      sf_hash_mb = std::atoi(hash_arg);
+      if (sf_hash_mb <= 0) {
+        std::cerr << "Error: -sf-hash must be a positive integer (MB), got '"
+                  << hash_arg << "'." << std::endl;
+        return 1;
+      }
+      std::cout << "Stockfish hash set to: " << sf_hash_mb << " MB"
+                << std::endl;
     } else if (0 ==
                static_cast<std::string>("-files-per-dir").compare(argv[idx])) {
       max_files_per_directory = std::atoi(argv[idx + 1]);
@@ -108,7 +139,11 @@ int main(int argc, char *argv[]) {
       std::cout << "Deduplication Q ratio set to: " << dedup_q_ratio
                 << std::endl;
     } else if (0 == static_cast<std::string>("-output").compare(argv[idx])) {
-      output_prefix = argv[idx + 1];
+      if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
+        std::cerr << "Error: -output requires a prefix argument." << std::endl;
+        return 1;
+      }
+      output_prefix = argv[++idx];
       std::cout << "Output prefix set to: " << output_prefix << std::endl;
     }
   }
@@ -116,7 +151,8 @@ int main(int argc, char *argv[]) {
   // Initialize Stockfish if requested
   std::unique_ptr<StockfishEvaluator> evaluator;
   if (options.stockfish_mode) {
-    evaluator = std::make_unique<StockfishEvaluator>(stockfish_path);
+    evaluator =
+        std::make_unique<StockfishEvaluator>(stockfish_path, sf_hash_mb);
     if (!evaluator->init()) {
       std::cerr << "Failed to initialize Stockfish. Exiting." << std::endl;
       return 1;
@@ -131,7 +167,7 @@ int main(int argc, char *argv[]) {
     // Skip option flags and their values
     if (arg[0] == '-') {
       // Skip the value for options that take a parameter
-      if (arg == "-stockfish" || arg == "-sf-depth" ||
+      if (arg == "-stockfish" || arg == "-sf-depth" || arg == "-sf-hash" ||
           arg == "-files-per-dir" || arg == "-max-games-to-convert" ||
           arg == "-chunks-per-file" || arg == "-dedup-uniq-buffersize" ||
           arg == "-dedup-q-ratio" || arg == "-output") {

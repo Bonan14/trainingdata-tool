@@ -16,7 +16,7 @@ namespace lczero {
 lczero::V6TrainingData get_v6_training_data(
     lczero::GameResult game_result, const lczero::PositionHistory& history,
     lczero::Move played_move, lczero::MoveList legal_moves, float Q,
-    lczero::Move best_move, uint32_t visits, int plies_left) {
+    lczero::Move best_move, uint32_t visits, int plies_left, float D) {
   lczero::V6TrainingData result;
   std::memset(&result, 0, sizeof(result));
 
@@ -103,9 +103,8 @@ lczero::V6TrainingData get_v6_training_data(
   // Q values (relative to side-to-move)
   result.root_q = result.best_q = Q;
 
-  // D values (draw probability) - Stockfish WDL gives us this but we don't have
-  // it in current impl Set to 0 for now, can be enhanced later with WDL parsing
-  result.root_d = result.best_d = 0.0f;
+  // D values (draw probability) - from Stockfish WDL when available
+  result.root_d = result.best_d = D;
 
   // M values (moves left estimate from engine) - placeholder
   result.root_m = result.best_m = static_cast<float>(plies_left);
@@ -115,7 +114,7 @@ lczero::V6TrainingData get_v6_training_data(
 
   // Played move values (set same as root for supervised)
   result.played_q = Q;
-  result.played_d = 0.0f;
+  result.played_d = D;
   result.played_m = static_cast<float>(plies_left);
 
   // Orig values (for value repair) - set to NaN as we don't have cache

@@ -64,9 +64,11 @@ def read_chunks(filename):
                 if not data:
                     break
                 if len(data) != STRUCT_SIZE:
-                    print(f"Error: Incomplete chunk, got {len(data)} bytes, expected {STRUCT_SIZE}")
-                    break
-                
+                    raise ValueError(
+                        f"Incomplete chunk in {filename}: got {len(data)} bytes, "
+                        f"expected {STRUCT_SIZE}"
+                    )
+
                 unpacked = struct.unpack(STRUCT_FMT, data)
                 
                 # Extract relevant fields for verification
@@ -117,7 +119,7 @@ def read_chunks(filename):
                     "raw_size": len(data)
                 }
     except Exception as e:
-        print(f"Error reading {filename}: {e}")
+        raise RuntimeError(f"Error reading {filename}: {e}") from e
 
 def main():
     if len(sys.argv) < 2:

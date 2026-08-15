@@ -9,7 +9,8 @@
 // Manages communication with Stockfish via UCI protocol
 class StockfishEvaluator {
  public:
-  explicit StockfishEvaluator(const std::string& stockfish_path);
+  explicit StockfishEvaluator(const std::string& stockfish_path,
+                              int hash_mb = 128);
   ~StockfishEvaluator();
 
   // Initialize the engine (send uci, wait for uciok)
@@ -25,8 +26,10 @@ class StockfishEvaluator {
     int score_cp;
     std::string best_move; // Long algebraic notation (e.g. "e2e4")
     uint32_t nodes;
-    
-    Result() : score_cp(0), nodes(0) {}
+    float draw_prob;       // Draw probability from UCI WDL [0, 1]
+    bool ok;               // False if the search failed/timed out
+
+    Result() : score_cp(0), nodes(0), draw_prob(0.0f), ok(false) {}
   };
 
   // Evaluate current position at given depth
@@ -41,7 +44,7 @@ class StockfishEvaluator {
   // Check if engine is running
   bool isRunning() const {
 #ifdef _WIN32
-    return pipe_ != nullptr;
+    return process_handle_ != nullptr;
 #else
     return write_fd_ >= 0;
 #endif
@@ -49,9 +52,12 @@ class StockfishEvaluator {
 
  private:
   std::string stockfish_path_;
-  
+  int hash_mb_;
+
 #ifdef _WIN32
-  FILE* pipe_;
+  HANDLE process_handle_;
+  HANDLE stdin_write_;
+  HANDLE stdout_read_;
 #else
   int child_pid_;
   int write_fd_;

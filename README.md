@@ -37,9 +37,10 @@ Pass PGN input files and it will output training data in the same way lc0 selfpl
 | `-lichess-mode` | Extract SF eval scores from Lichess commented games |
 | `-stockfish <path>` | Use Stockfish binary to evaluate positions |
 | `-sf-depth <N>` | Stockfish search depth (default: 10) |
+| `-sf-hash <N>` | Stockfish hash table size in MB (default: 128) |
 | `-files-per-dir <N>` | Max files per directory (default: 10000) |
 | `-max-games-to-convert <N>` | Limit number of games to process |
-| `-chunks-per-file <N>` | Training chunks per output file |
+| `-chunks-per-file <N>` | Chunks per output file in deduplication mode only; PGN conversion always writes one game per file |
 | `-deduplication-mode` | Deduplicate existing training data |
 
 ### Examples

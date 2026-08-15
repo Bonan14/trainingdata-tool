@@ -20,10 +20,11 @@
 #include <sys/select.h>
 #endif
 
-StockfishEvaluator::StockfishEvaluator(const std::string& stockfish_path)
-    : stockfish_path_(stockfish_path)
+StockfishEvaluator::StockfishEvaluator(const std::string& stockfish_path,
+                                       int hash_mb)
+    : stockfish_path_(stockfish_path), hash_mb_(hash_mb)
 #ifdef _WIN32
-    , pipe_(nullptr)
+    , process_handle_(nullptr), stdin_write_(nullptr), stdout_read_(nullptr)
 #else
     , child_pid_(-1), write_fd_(-1), read_fd_(-1)
 #endif
@@ -34,24 +35,94 @@ StockfishEvaluator::~StockfishEvaluator() {
 }
 
 #ifdef _WIN32
-// Windows implementation using CreateProcess and pipes
+// Windows implementation using CreateProcess with separate stdin/stdout pipes
 bool StockfishEvaluator::init() {
-  // Simplified Windows implementation - use _popen with both read/write
-  // For production, would need proper CreateProcess with STARTUPINFO pipes
-  
-  std::string cmd = "cmd /c \"" + stockfish_path_ + "\"";
-  pipe_ = _popen(stockfish_path_.c_str(), "r+");
-  
-  if (!pipe_) {
-    std::cerr << "Failed to start Stockfish: " << stockfish_path_ << std::endl;
+  SECURITY_ATTRIBUTES sa;
+  sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+  sa.bInheritHandle = TRUE;
+  sa.lpSecurityDescriptor = nullptr;
+
+  HANDLE stdin_read = nullptr;
+  HANDLE stdout_write = nullptr;
+
+  if (!CreatePipe(&stdin_read, &stdin_write_, &sa, 0)) {
+    std::cerr << "Failed to create stdin pipe" << std::endl;
     return false;
   }
-  
+  if (!SetHandleInformation(stdin_write_, HANDLE_FLAG_INHERIT, 0)) {
+    std::cerr << "Failed to configure stdin pipe" << std::endl;
+    CloseHandle(stdin_read);
+    CloseHandle(stdin_write_);
+    stdin_write_ = nullptr;
+    return false;
+  }
+
+  if (!CreatePipe(&stdout_read_, &stdout_write, &sa, 0)) {
+    std::cerr << "Failed to create stdout pipe" << std::endl;
+    CloseHandle(stdin_read);
+    CloseHandle(stdin_write_);
+    stdin_write_ = nullptr;
+    return false;
+  }
+  if (!SetHandleInformation(stdout_read_, HANDLE_FLAG_INHERIT, 0)) {
+    std::cerr << "Failed to configure stdout pipe" << std::endl;
+    CloseHandle(stdin_read);
+    CloseHandle(stdin_write_);
+    CloseHandle(stdout_read_);
+    CloseHandle(stdout_write);
+    stdin_write_ = nullptr;
+    stdout_read_ = nullptr;
+    return false;
+  }
+
+  STARTUPINFOA si;
+  ZeroMemory(&si, sizeof(si));
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdInput = stdin_read;
+  si.hStdOutput = stdout_write;
+  si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+
+  PROCESS_INFORMATION pi;
+  ZeroMemory(&pi, sizeof(pi));
+
+  if (!CreateProcessA(nullptr, const_cast<char*>(stockfish_path_.c_str()),
+                      nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
+    std::cerr << "Failed to start Stockfish: " << stockfish_path_ << std::endl;
+    CloseHandle(stdin_read);
+    CloseHandle(stdin_write_);
+    CloseHandle(stdout_read_);
+    CloseHandle(stdout_write);
+    stdin_write_ = nullptr;
+    stdout_read_ = nullptr;
+    return false;
+  }
+
+  // Parent no longer needs the child's pipe ends
+  CloseHandle(stdin_read);
+  CloseHandle(stdout_write);
+
+  process_handle_ = pi.hProcess;
+  CloseHandle(pi.hThread);
+
   sendCommand("uci");
-  waitFor("uciok");
+  if (!waitFor("uciok", 5000)) {
+    std::cerr << "Stockfish did not respond to uci command" << std::endl;
+    quit();
+    return false;
+  }
+
+  sendCommand("setoption name Threads value 2");
+  sendCommand("setoption name Hash value " + std::to_string(hash_mb_));
+  sendCommand("setoption name UCI_ShowWDL value true");
   sendCommand("isready");
-  waitFor("readyok");
-  
+
+  if (!waitFor("readyok", 5000)) {
+    std::cerr << "Stockfish did not respond to isready command" << std::endl;
+    quit();
+    return false;
+  }
+
   return true;
 }
 
@@ -114,7 +185,7 @@ bool StockfishEvaluator::init() {
   }
   
   sendCommand("setoption name Threads value 2");
-  sendCommand("setoption name Hash value 1600");
+  sendCommand("setoption name Hash value " + std::to_string(hash_mb_));
   sendCommand("setoption name UCI_ShowWDL value true");
   sendCommand("isready");
   
@@ -155,18 +226,19 @@ StockfishEvaluator::Result StockfishEvaluator::evaluate(int depth) {
   std::ostringstream cmd;
   cmd << "go depth " << depth;
   sendCommand(cmd.str());
-  
+
   // Read output until we get "bestmove" (with 30s timeout)
   auto start = std::chrono::steady_clock::now();
   const int timeout_seconds = 30;
-  
+
   Result result;
   bool found_score = false;
-  
+  bool got_bestmove = false;
+
   // Keep last 10 lines for diagnostics
   std::deque<std::string> recent_lines;
   const size_t max_recent_lines = 10;
-  
+
   std::string line;
   while (true) {
     line = readLine();
@@ -181,25 +253,39 @@ StockfishEvaluator::Result StockfishEvaluator::evaluate(int depth) {
           std::cerr << "  " << l << std::endl;
         }
         std::cerr << "=== End Stockfish Output ===" << std::endl;
-        return result;  // Return empty result on timeout
+        // Stop the search and drain through bestmove so later output from
+        // this search is not consumed as the next position's result.
+        sendCommand("stop");
+        auto drain_start = std::chrono::steady_clock::now();
+        while (true) {
+          std::string drain_line = readLine();
+          if (drain_line.find("bestmove") != std::string::npos) break;
+          auto drain_elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+              std::chrono::steady_clock::now() - drain_start).count();
+          if (drain_elapsed >= 5) break;
+          if (drain_line.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+          }
+        }
+        return result;  // result.ok is false, signaling failure to the caller
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       continue;
     }
-    
+
     // Store line for diagnostics
     recent_lines.push_back(line);
     if (recent_lines.size() > max_recent_lines) {
       recent_lines.pop_front();
     }
-    
+
     // Check for errors from Stockfish
     if (line.find("Illegal move") != std::string::npos ||
         line.find("illegal move") != std::string::npos ||
         line.find("Error") != std::string::npos) {
       std::cerr << "Stockfish error: " << line << std::endl;
     }
-    
+
     // Capture nodes if available
     if (line.find("nodes ") != std::string::npos) {
       std::regex nodes_regex("nodes (\\d+)");
@@ -210,9 +296,9 @@ StockfishEvaluator::Result StockfishEvaluator::evaluate(int depth) {
         } catch (...) {}
       }
     }
-    
+
     // Parse score from info lines
-    
+
     if (line.find("score cp ") != std::string::npos) {
       std::regex cp_regex("score cp (-?\\d+)");
       std::smatch matches;
@@ -230,17 +316,20 @@ StockfishEvaluator::Result StockfishEvaluator::evaluate(int depth) {
         found_score = true;
       }
     }
-    
+
     // Parse WDL if enabled (e.g. "wdl 300 400 300")
     if (line.find(" wdl ") != std::string::npos) {
         std::regex wdl_regex(" wdl (\\d+) (\\d+) (\\d+)");
         std::smatch matches;
         if (std::regex_search(line, matches, wdl_regex)) {
             int w = std::stoi(matches[1].str());
+            int d = std::stoi(matches[2].str());
             int l = std::stoi(matches[3].str());
-            
+
+            result.draw_prob = d / 1000.0f;
+
             double Q_wdl = (double)(w - l) / 1000.0;
-            
+
             // Protect against Q = -1 or 1 exactly causing division by zero/log(0)
             if (Q_wdl >= 0.99) result.score_cp = 10000;
             else if (Q_wdl <= -0.99) result.score_cp = -10000;
@@ -255,18 +344,20 @@ StockfishEvaluator::Result StockfishEvaluator::evaluate(int depth) {
             found_score = true;
         }
     }
-    
+
     if (line.find("bestmove") != std::string::npos) {
       std::regex bestmove_regex("bestmove ([a-h][1-8][a-h][1-8][qrbn]?)");
       std::smatch matches;
       if (std::regex_search(line, matches, bestmove_regex)) {
         result.best_move = matches[1].str();
       }
+      got_bestmove = true;
       break;
     }
   }
-  
+
   if (!found_score) result.score_cp = 0;
+  result.ok = got_bestmove;
   return result;
 }
 
@@ -283,11 +374,20 @@ float StockfishEvaluator::cpToWinProbability(int centipawns) {
 
 void StockfishEvaluator::quit() {
 #ifdef _WIN32
-  if (pipe_) {
-    fprintf(pipe_, "quit\n");
-    fflush(pipe_);
-    _pclose(pipe_);
-    pipe_ = nullptr;
+  if (stdin_write_) {
+    sendCommand("quit");
+    CloseHandle(stdin_write_);
+    stdin_write_ = nullptr;
+  }
+  if (stdout_read_) {
+    CloseHandle(stdout_read_);
+    stdout_read_ = nullptr;
+  }
+  if (process_handle_) {
+    WaitForSingleObject(process_handle_, 3000);
+    TerminateProcess(process_handle_, 0);
+    CloseHandle(process_handle_);
+    process_handle_ = nullptr;
   }
 #else
   if (write_fd_ >= 0) {
@@ -306,9 +406,11 @@ void StockfishEvaluator::quit() {
 
 void StockfishEvaluator::sendCommand(const std::string& cmd) {
 #ifdef _WIN32
-  if (pipe_) {
-    fprintf(pipe_, "%s\n", cmd.c_str());
-    fflush(pipe_);
+  if (stdin_write_) {
+    std::string line = cmd + "\n";
+    DWORD written = 0;
+    WriteFile(stdin_write_, line.c_str(),
+              static_cast<DWORD>(line.size()), &written, nullptr);
   }
 #else
   if (write_fd_ >= 0) {
@@ -320,18 +422,17 @@ void StockfishEvaluator::sendCommand(const std::string& cmd) {
 
 std::string StockfishEvaluator::readLine() {
 #ifdef _WIN32
-  if (!pipe_) return "";
-  
-  char buffer[4096];
-  if (fgets(buffer, sizeof(buffer), pipe_)) {
-    std::string line(buffer);
-    // Remove trailing newline
-    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
-      line.pop_back();
-    }
-    return line;
+  if (!stdout_read_) return "";
+
+  std::string line;
+  char c;
+  DWORD read_bytes = 0;
+  while (ReadFile(stdout_read_, &c, 1, &read_bytes, nullptr) &&
+         read_bytes == 1) {
+    if (c == '\n') break;
+    if (c != '\r') line += c;
   }
-  return "";
+  return line;
 #else
   if (read_fd_ < 0) return "";
   
