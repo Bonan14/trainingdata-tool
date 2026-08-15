@@ -35,7 +35,6 @@ bool extract_lichess_comment_score(const char* comment, float& Q) {
     return false;
   }
   return false;
-  return false;
 }
 
 std::string poly_move_to_uci(move_t move, const board_t* board) {

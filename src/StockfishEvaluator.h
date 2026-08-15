@@ -6,6 +6,10 @@
 #include <cstdint>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 // Manages communication with Stockfish via UCI protocol
 class StockfishEvaluator {
  public:

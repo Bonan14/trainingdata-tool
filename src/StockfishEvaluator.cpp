@@ -16,6 +16,7 @@
 #else
 #include <unistd.h>
 #include <signal.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <sys/select.h>
 #endif
@@ -151,18 +152,23 @@ bool StockfishEvaluator::init() {
     // Child process
     close(stdin_pipe[1]);   // Close write end of stdin pipe
     close(stdout_pipe[0]);  // Close read end of stdout pipe
-    
+
     dup2(stdin_pipe[0], STDIN_FILENO);
     dup2(stdout_pipe[1], STDOUT_FILENO);
-    dup2(stdout_pipe[1], STDERR_FILENO);
-    
+    // Redirect stderr to /dev/null so engine diagnostics cannot corrupt UCI
+    // protocol parsing on stdout.
+    int devnull = open("/dev/null", O_WRONLY);
+    if (devnull >= 0) {
+      dup2(devnull, STDERR_FILENO);
+      close(devnull);
+    }
+
     close(stdin_pipe[0]);
     close(stdout_pipe[1]);
-    
+
     execl(stockfish_path_.c_str(), stockfish_path_.c_str(), nullptr);
-    
+
     // If exec fails
-    std::cerr << "Failed to exec Stockfish: " << stockfish_path_ << std::endl;
     _exit(1);
   }
   
