@@ -136,8 +136,14 @@ bool StockfishEvaluator::init() {
   int stdin_pipe[2];   // Parent writes, child reads
   int stdout_pipe[2];  // Child writes, parent reads
 
-  if (pipe(stdin_pipe) < 0 || pipe(stdout_pipe) < 0) {
+  if (pipe(stdin_pipe) < 0) {
     std::cerr << "Failed to create pipes" << std::endl;
+    return false;
+  }
+  if (pipe(stdout_pipe) < 0) {
+    std::cerr << "Failed to create pipes" << std::endl;
+    close(stdin_pipe[0]);
+    close(stdin_pipe[1]);
     return false;
   }
 

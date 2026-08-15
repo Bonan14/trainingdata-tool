@@ -63,7 +63,6 @@ lczero::V6TrainingData get_v6_training_data(
     result.planes[i] = lczero::ReverseBitsInBytes(planes[i].mask);
   }
 
-  // const auto& position = history.Last(); // Moved up
   const auto& castlings = position.GetBoard().castlings();
 
   // Populate castlings
