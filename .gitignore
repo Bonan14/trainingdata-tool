@@ -50,3 +50,6 @@ Makefile
 trainingdata-tool
 
 Project\.cbp
+
+__pycache__/
+*.pyc

@@ -16,7 +16,8 @@ namespace lczero {
 lczero::V6TrainingData get_v6_training_data(
     lczero::GameResult game_result, const lczero::PositionHistory& history,
     lczero::Move played_move, lczero::MoveList legal_moves, float Q,
-    lczero::Move best_move, uint32_t visits, int plies_left, float D) {
+    lczero::Move best_move, uint32_t visits, int plies_left, float D,
+    float played_policy_share) {
   lczero::V6TrainingData result;
   std::memset(&result, 0, sizeof(result));
 
@@ -30,20 +31,33 @@ lczero::V6TrainingData get_v6_training_data(
     probability = -1.0f;
   }
 
-  // Legal moves to 0
+  // A PGN gives us one move and no alternatives, so the policy target is
+  // built from the played move alone. played_policy_share == 1.0 is the plain
+  // one-hot target; a smaller share spreads the remainder evenly over the
+  // other legal moves, which is the closest thing to a visit distribution we
+  // can reconstruct without a search.
+  size_t legal_count = 0;
+  for (lczero::Move move : legal_moves) {
+    if (lczero::MoveToNNIndex(move, 0) < 1858) ++legal_count;
+  }
+  const float share = (legal_count > 1) ? played_policy_share : 1.0f;
+  const float other_share =
+      (legal_count > 1) ? (1.0f - share) / (legal_count - 1) : 0.0f;
+
   for (lczero::Move move : legal_moves) {
     uint16_t idx = lczero::MoveToNNIndex(move, 0);
     if (idx < 1858) {
-      result.probabilities[idx] = 0.0f;
+      result.probabilities[idx] = other_share;
     }
   }
 
   const auto& position = history.Last();
 
-  // Played move to 1 (with bounds check to prevent crash from invalid moves)
+  // Played move takes its share (with bounds check to prevent crash from
+  // invalid moves)
   uint16_t played_idx = lczero::MoveToNNIndex(played_move, 0);
   if (played_idx < 1858) {
-    result.probabilities[played_idx] = 1.0f;
+    result.probabilities[played_idx] = share;
   } else {
 // Invalid move - this shouldn't happen but prevents crash
 // Log warning in debug builds

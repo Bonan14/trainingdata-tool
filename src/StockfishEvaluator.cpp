@@ -1,5 +1,7 @@
 #include "StockfishEvaluator.h"
 
+#include "WdlConversion.h"
+
 #include <iostream>
 #include <sstream>
 #include <cstring>
@@ -334,7 +336,17 @@ StockfishEvaluator::Result StockfishEvaluator::evaluate(int depth) {
       }
     }
 
-    // Parse WDL if enabled (e.g. "wdl 300 400 300")
+    // Parse WDL if enabled (e.g. "wdl 300 400 300").
+    //
+    // This is the engine's own win/draw/loss distribution, which is
+    // strictly more information than the centipawn score: cp is a scalar
+    // projection that cannot express D at all. So record W/D/L directly
+    // and leave score_cp as the engine actually reported it.
+    //
+    // (An earlier version converted the WDL *into* a synthetic cp via a
+    // sigmoid, overwriting the real score, and the caller then converted
+    // that back into a Q. That round trip discarded the real draw
+    // probability and the real cp to recover a worse estimate of both.)
     if (line.find(" wdl ") != std::string::npos) {
         std::regex wdl_regex(" wdl (\\d+) (\\d+) (\\d+)");
         std::smatch matches;
@@ -344,21 +356,8 @@ StockfishEvaluator::Result StockfishEvaluator::evaluate(int depth) {
             int l = std::stoi(matches[3].str());
 
             result.draw_prob = d / 1000.0f;
-
-            double Q_wdl = (double)(w - l) / 1000.0;
-
-            // Protect against Q = -1 or 1 exactly causing division by zero/log(0)
-            if (Q_wdl >= 0.99) result.score_cp = 10000;
-            else if (Q_wdl <= -0.99) result.score_cp = -10000;
-            else {
-                // Formula: Q = 2 / (1 + exp(-0.4 * (cp / 100))) - 1
-                // cp = 100 * ln( 2 / (Q + 1) - 1 ) / -0.4
-                double term = 2.0 / (Q_wdl + 1.0) - 1.0;
-                if (term > 0) {
-                   result.score_cp = (int)( (std::log(term) / -0.4) * 100.0 );
-                }
-            }
-            found_score = true;
+            result.q_value = (float)(w - l) / 1000.0f;
+            result.has_wdl = true;
         }
     }
 
@@ -379,14 +378,18 @@ StockfishEvaluator::Result StockfishEvaluator::evaluate(int depth) {
 }
 
 float StockfishEvaluator::cpToWinProbability(int centipawns) {
-  // Handle mate scores
+  // Handle mate scores (evaluate() encodes these as +-10000-ish).
   if (centipawns >= 10000) return 1.0f;
   if (centipawns <= -10000) return -1.0f;
-  
-  // Use consistent formula with PGNGame (coefficient 0.4 for pawns).
-  // User requested explicit division by 100 to convert centipawns to pawns.
-  // Formula: 2 / (1 + exp(-0.4 * (cp / 100))) - 1
-  return 2.0f / (1.0f + std::exp(-0.4f * (centipawns / 100.0f))) - 1.0f;
+
+  // Shared with -pgn-eval-mode via wdl::ScoreToWDL, using the defaults
+  // fitted against real game outcomes. This used to be an ad-hoc sigmoid,
+  // 2/(1+exp(-0.4*cp/100))-1, which did not match what PGNGame.cpp does
+  // and so gave a different Q for the same score depending on mode.
+  //
+  // Prefer the engine's own WDL (Result::has_wdl) when it reports one;
+  // this is only for engines that do not.
+  return wdl::CentipawnToQ(centipawns, /*scale=*/1.13f, /*spread=*/0.21f);
 }
 
 void StockfishEvaluator::quit() {

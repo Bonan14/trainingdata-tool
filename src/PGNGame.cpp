@@ -2,7 +2,10 @@
 #include "StaticEvaluator.h"
 #include "StockfishEvaluator.h"
 #include "trainingdata.h"
+#include "WdlConversion.h"
+#include "utils/fastmath.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstring>
@@ -12,22 +15,160 @@
 #include <sstream>
 #include <vector>
 
-float convert_sf_score_to_win_probability(float score) {
-  return 2 / (1 + exp(-0.4 * score)) - 1;
+// Everything below ports lc0's own WDL reconstruction machinery from
+// lc0/src/search/classic/{search.cc,params.{h,cc}}, run in the direction
+// those files never need: from a bare eval number back to (Q, D), rather
+// than from an already-known (Q, D) to a UCI display number.
+
+struct WDLRescaleParams {
+  float ratio;
+  float diff;
+};
+
+// Ports AccurateWDLRescaleParams() (search/classic/params.cc) verbatim.
+// Converts contempt/draw-rate/book-bias settings into the (ratio, diff)
+// WDLRescale() applies. This is the variant lc0 itself selects by default
+// (kWDLCalibrationElo == 0 in params.cc's constructor) -- the alternative,
+// SimplifiedWDLRescaleParams(), instead expects real Elo estimates for both
+// sides, which we have no use for here.
+//
+// At the args passed below -- lc0's own defaults for a neutral, no-contempt
+// setup (kContempt=0, kWDLDrawRateTarget=0 i.e. "use reference",
+// kWDLDrawRateReference=0.5, kWDLBookExitBias=0.65, kContemptMaxValue=420,
+// kWDLContemptAttenuation=1.0) -- this comes out to a pure identity
+// (ratio=1, diff=0): contempt=0 zeroes out diff entirely (it's a factor at
+// the end of the expression), and draw_rate_target=0 collapses
+// scale_target to scale_reference, giving ratio=1. Ported as a real
+// function rather than hardcoding ratio=1/diff=0 so wiring up an actual
+// contempt/draw-rate CLI option later is a one-line change to the call
+// site below, not a rewrite.
+WDLRescaleParams ComputeWDLRescaleParams(float contempt,
+                                         float draw_rate_target,
+                                         float draw_rate_reference,
+                                         float book_exit_bias,
+                                         float contempt_max,
+                                         float contempt_attenuation) {
+  if (draw_rate_target > 0.0f && draw_rate_target < 0.001f) {
+    draw_rate_target = 0.001f;
+  }
+  float scale_reference = 1.0f / std::log((1.0f + draw_rate_reference) /
+                                          (1.0f - draw_rate_reference));
+  float scale_target =
+      (draw_rate_target == 0
+           ? scale_reference
+           : 1.0f / std::log((1.0f + draw_rate_target) /
+                             (1.0f - draw_rate_target)));
+  float ratio = scale_target / scale_reference;
+  // Parenthesized (std::min)/(std::max) to dodge windows.h's min()/max()
+  // macros (StockfishEvaluator.h pulls windows.h in transitively without
+  // NOMINMAX).
+  float clamped_contempt =
+      (std::min)(contempt_max, (std::max)(-contempt_max, contempt));
+  float diff =
+      scale_target / (scale_reference * scale_reference) /
+      (1.0f / std::pow(std::cosh(0.5f * (1 - book_exit_bias) / scale_target),
+                       2) +
+       1.0f / std::pow(std::cosh(0.5f * (1 + book_exit_bias) / scale_target),
+                       2)) *
+      std::log(10.0f) / 200.0f * clamped_contempt * contempt_attenuation;
+  return {ratio, diff};
 }
 
-bool extract_lichess_comment_score(const char* comment, float& Q) {
+// Ports WDLRescale() (search/classic/search.cc) verbatim, minus the
+// invert=true branch: that direction undoes a rescale for UCI display,
+// which isn't a step we ever perform here.
+void WDLRescale(float& v, float& d, float ratio, float diff, float sign,
+                float max_reasonable_s) {
+  float w = (1 + v - d) / 2;
+  float l = (1 - v - d) / 2;
+  const float eps = 0.0001f;
+  if (w > eps && d > eps && l > eps && w < (1.0f - eps) && d < (1.0f - eps) &&
+      l < (1.0f - eps)) {
+    float a = lczero::FastLog(1 / l - 1);
+    float b = lczero::FastLog(1 / w - 1);
+    float s = (std::min)(max_reasonable_s, 2 / (a + b));
+    float mu = (a - b) / (a + b);
+    float s_new = s * ratio;
+    float mu_new = mu + sign * s * s * diff;
+    float w_new = lczero::FastLogistic((-1.0f + mu_new) / s_new);
+    float l_new = lczero::FastLogistic((-1.0f - mu_new) / s_new);
+    v = w_new - l_new;
+    d = (std::max)(0.0f, 1.0f - w_new - l_new);
+  }
+}
+
+// Reconstructs (Q, D) from a bare eval, using lc0's "WDL_mu" model run
+// backwards -- see wdl::ScoreToWDL in WdlConversion.h for the derivation.
+// In short: search.cc reports `score = 100 * mu`, so mu is just the eval in
+// pawns, and feeding it into the same logistic pair WDLRescale()
+// reconstructs with yields W and L, hence Q and D together. One model, one
+// consistent distribution -- Q and D are not computed from separate
+// sources and so cannot disagree.
+//
+// Both parameters are fitted against the real outcomes of the games being
+// converted (scripts/measure_pgn_wdl.py); see Options::wdl_scale in
+// PGNGame.h.
+void PawnScoreToWDL(float score_pawns, float scale, float spread, float& q,
+                    float& d) {
+  // Shared with StockfishEvaluator's fallback path (WdlConversion.h) so a
+  // given score maps to the same (Q, D) in both modes.
+  wdl::ScoreToWDL(score_pawns, scale, spread, q, d);
+
+  // Apply lc0's real contempt/draw-rate rescale on top -- but only when it
+  // would actually do something. At lc0's neutral defaults it computes to
+  // ratio=1, diff=0, which is mathematically an identity, and running it
+  // anyway is not free: WDLRescale() re-derives s from the (w, l) pair and
+  // clamps it to max_reasonable_s, so a round trip through it *changes*
+  // the values whenever the natural s exceeds that clamp. Skipping the
+  // identity case keeps the reconstruction above intact.
+  //
+  // Note max_reasonable_s is lc0's WDLMaxS (default 1.4) -- a clamp on the
+  // decomposed sharpness, NOT the same quantity as our fitted `spread`.
+  // Passing `spread` here was a bug; they are unrelated parameters that
+  // happen to both describe "spread".
+  static const WDLRescaleParams kRescaleParams = ComputeWDLRescaleParams(
+      /*contempt=*/0.0f, /*draw_rate_target=*/0.0f,
+      /*draw_rate_reference=*/0.5f, /*book_exit_bias=*/0.65f,
+      /*contempt_max=*/420.0f, /*contempt_attenuation=*/1.0f);
+  constexpr float kWDLMaxS = 1.4f;  // lc0's WDLMaxS default.
+  const bool rescale_is_identity =
+      std::fabs(kRescaleParams.ratio - 1.0f) < 1e-6f &&
+      std::fabs(kRescaleParams.diff) < 1e-6f;
+  if (!rescale_is_identity) {
+    WDLRescale(q, d, kRescaleParams.ratio, kRescaleParams.diff, /*sign=*/1.0f,
+               kWDLMaxS);
+  }
+}
+
+bool extract_pgn_eval_comment_score(const char* comment, float& score_pawns) {
   std::string s(comment);
-  // Note: brackets must be escaped with \\ in C++ regex strings
-  static std::regex rgx("\\[%eval (-?\\d+(\\.\\d+)?)\\]");
-  static std::regex rgx2("\\[%eval #(-?\\d+)\\]");
+  // Fishtest/cutechess-cli's own comment format, e.g. "-0.76/18 1.813s" or,
+  // for a mate score, "+M27/18 0.141s" (sometimes with a trailing
+  // adjudication note this tool doesn't care about: "-M20/42 0.153s,
+  // Black wins by adjudication"). Unlike Lichess's [%eval] -- always
+  // White-relative, and the code this replaced never corrected for that --
+  // this score is already self-relative: cutechess has each engine
+  // annotate its own move with its own evaluation, positive meaning good
+  // for whoever just moved, which is exactly the perspective Q needs here.
+  // No side-to-move sign flip required.
+  //
+  // Leading whitespace is tolerated: pgn.cpp copies whatever sits between
+  // '{' and '}' verbatim, and not every writer hugs the braces tight the
+  // way Fishtest's own PGNs do -- e.g. python-chess's PGN exporter (used by
+  // scripts/finish_games.py) writes "{ -0.76/18 1.813s }" with inner spaces.
+  static std::regex mate_rgx("^\\s*([+-])M\\d+/");
+  static std::regex score_rgx("^\\s*([+-]?\\d+(\\.\\d+)?)/");
   std::smatch matches;
   try {
-    if (std::regex_search(s, matches, rgx)) {
-      Q = std::stof(matches[1].str());
+    if (std::regex_search(s, matches, mate_rgx)) {
+      // A saturating "huge" score, sign-preserved -- same convention the
+      // old lichess mate handling used, since Q only needs to be finite
+      // and drive the win-probability sigmoid to ~+-1 either way.
+      score_pawns = matches[1].str() == "-" ? -128.0f : 128.0f;
       return true;
-    } else if (std::regex_search(s, matches, rgx2)) {
-      Q = matches[1].str().at(0) == '-' ? -128.0f : 128.0f;
+    }
+    if (std::regex_search(s, matches, score_rgx)) {
+      score_pawns = std::stof(matches[1].str());
       return true;
     }
   } catch (const std::exception& e) {
@@ -251,39 +392,56 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
         std::cerr << "Aborting game: Stockfish evaluation failed" << std::endl;
         return {};
       }
-      Q = StockfishEvaluator::cpToWinProbability(sf_result.score_cp);
-      D = sf_result.draw_prob;
+      if (sf_result.has_wdl) {
+        // The engine reported a real win/draw/loss distribution, which is
+        // exactly what the training data wants. Use it as-is rather than
+        // reconstructing it from the scalar score -- no model, no fit.
+        Q = sf_result.q_value;
+        D = sf_result.draw_prob;
+      } else {
+        // No WDL available (older engine, or UCI_ShowWDL unsupported):
+        // fall back to the same reconstruction -pgn-eval-mode uses, so
+        // both paths agree on what a given score means.
+        wdl::ScoreToWDL(sf_result.score_cp / 100.0f, options.wdl_scale,
+                        options.wdl_spread, Q, D);
+      }
       visits = sf_result.nodes;
       sf_best_move_str = sf_result.best_move;
 
       if (options.verbose) {
         std::cout << "SF eval: " << sf_result.score_cp << " cp, Q=" << Q
+                  << ", D=" << D
+                  << (sf_result.has_wdl ? " (engine WDL)" : " (reconstructed)")
                   << ", bestmove=" << sf_best_move_str << std::endl;
       }
-    } else if (options.lichess_mode) {
-      float lichess_score;
+    } else if (options.pgn_eval_mode) {
+      float pgn_score;
       if (pgn_move.comment[0] &&
-          extract_lichess_comment_score(pgn_move.comment, lichess_score)) {
-        Q = convert_sf_score_to_win_probability(lichess_score);
+          extract_pgn_eval_comment_score(pgn_move.comment, pgn_score)) {
+        PawnScoreToWDL(pgn_score, options.wdl_scale, options.wdl_spread, Q, D);
       } else {
-        // Without a parsed %eval, the position would be written with a fake
+        // Without a parsed eval, the position would be written with a fake
         // Q of 0.0 indistinguishable from an equal evaluation. Abort this
         // game instead to keep the move/evaluation sequence aligned.
-        std::cerr << "Aborting game: no %eval found for move \""
+        std::cerr << "Aborting game: no eval comment found for move \""
                   << pgn_move.move << "\"" << std::endl;
         return {};
       }
     } else {
       // Normal mode: use static evaluation
-      int cp = StaticEvaluator::evaluate(board);
-      Q = StaticEvaluator::cpToWinProbability(cp);
+      StaticEvaluator::evaluateWDL(board, move, options.wdl_scale,
+                                   options.wdl_spread, options.r50_damp_start,
+                                   Q, D);
       if (options.verbose) {
-        std::cout << "Static eval: " << cp << " cp, Q=" << Q << std::endl;
+        std::cout << "Static eval: " << StaticEvaluator::evaluate(board)
+                  << " cp, Q=" << Q << ", D=" << D << ", rule50 ply "
+                  << board->ply_nb << " -> "
+                  << StaticEvaluator::rule50PlyAfter(board, move) << std::endl;
       }
     }
 
     // Restore filtering of moves explicitly marked as bad by NAG annotation
-    if (options.lichess_mode && bad_move) {
+    if (options.pgn_eval_mode && bad_move) {
       if (options.verbose) {
         std::cout << "Skipping bad move (NAG) \"" << pgn_move.move << "\""
                   << std::endl;
@@ -319,9 +477,30 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
     // It will be updated in post-processing after we know total game length.
     int plies_left_placeholder = 0;
 
+    // Pseudo visit counts from the evaluation. A PGN records no search, so
+    // visits would otherwise be a meaningless 1 for every position. The share
+    // is symmetric around an equal position:
+    //
+    //     W = (1 + Q) / 2          share = max(W, 1 - W) = 0.5 + |Q|/2
+    //
+    // Using W directly would hand the played move a *smaller* share the more
+    // lost the position is -- and below 1/legal_moves it would drop under the
+    // moves nobody played, inverting the policy target. Measured on this data
+    // that hits 21% of frames, with 14% landing at exactly zero, because Q
+    // flips sign every ply. Mirroring instead of inverting keeps the played
+    // move dominant while still tracking how decided the position is; for
+    // Q >= 0 the two are identical.
+    float played_policy_share = 1.0f;
+    uint32_t chunk_visits = visits;
+    if (options.visit_budget > 0) {
+      const float w = 0.5f * (1.0f + Q);
+      played_policy_share = (std::max)(w, 1.0f - w);
+      chunk_visits = static_cast<uint32_t>(options.visit_budget);
+    }
+
     lczero::V6TrainingData chunk = get_v6_training_data(
         game_result, position_history, lc0_move, legal_moves, Q, best_move,
-        visits, plies_left_placeholder, D);
+        chunk_visits, plies_left_placeholder, D, played_policy_share);
     chunks.push_back(chunk);
     if (options.verbose) {
       std::string result;

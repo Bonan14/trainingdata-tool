@@ -2,6 +2,7 @@
 #define STATIC_EVALUATOR_H
 
 #include "polyglot_lib.h"
+#include "WdlConversion.h"
 #include <cstdint>
 
 // Static position evaluator for normal mode (no engine)
@@ -9,9 +10,33 @@
 
 class StaticEvaluator {
 public:
-  // Evaluate position, returns centipawns from side-to-move perspective
+  // Defaults shared with Options::wdl_scale / wdl_spread (PGNGame.h) so a
+  // caller that does not thread them through still gets the fitted model.
+  static constexpr float kDefaultWdlScale = 1.13f;
+  static constexpr float kDefaultWdlSpread = 0.21f;
+  // Halfmove clock below which the 50-move rule is ignored entirely.
+  static constexpr int kDefaultR50DampStart = 40;
+
+  // Evaluate position, returns centipawns from side-to-move perspective.
+  // Knows nothing about the 50-move rule -- use evaluateWDL for a training
+  // target.
   static int evaluate(board_t* board);
-  
+
+  // Halfmove clock the position would have after `move` is played. Only two
+  // kinds of move reset it -- a pawn move (push or promotion) and a capture
+  // (including en passant) -- and everything else extends it by one. Mirrors
+  // move_do.cpp exactly; see rule50PlyAfter's definition.
+  static int rule50PlyAfter(board_t* board, int move);
+
+  // Full training target: the static score mapped to (Q, D) through the same
+  // model the other modes use, then penalised by however far `played_move`
+  // leaves the halfmove clock from the 50-move limit. Pass the move actually
+  // played so a move that resets the clock is not penalised for the shuffling
+  // that preceded it.
+  static void evaluateWDL(board_t* board, int played_move, float wdl_scale,
+                          float wdl_spread, int r50_damp_start, float& q,
+                          float& d);
+
   // Convert centipawns to win probability in [-1, 1] range
   static float cpToWinProbability(int cp);
 

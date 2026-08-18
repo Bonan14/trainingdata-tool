@@ -70,9 +70,78 @@ int main(int argc, char *argv[]) {
       std::cout << "Verbose mode ON" << std::endl;
       options.verbose = true;
     } else if (0 ==
-               static_cast<std::string>("-lichess-mode").compare(argv[idx])) {
-      std::cout << "Lichess mode ON" << std::endl;
-      options.lichess_mode = true;
+               static_cast<std::string>("-pgn-eval-mode").compare(argv[idx])) {
+      std::cout << "PGN eval mode ON (reading evals already in the PGN's "
+                   "move comments -- no engine spawned)"
+                << std::endl;
+      options.pgn_eval_mode = true;
+    } else if (0 ==
+               static_cast<std::string>("-wdl-scale").compare(argv[idx])) {
+      if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
+        std::cerr << "Error: -wdl-scale requires a positive float argument."
+                  << std::endl;
+        return 1;
+      }
+      const char* scale_arg = argv[++idx];
+      options.wdl_scale = std::atof(scale_arg);
+      if (options.wdl_scale <= 0.0f) {
+        std::cerr << "Error: -wdl-scale must be a positive number, got '"
+                  << scale_arg << "'." << std::endl;
+        return 1;
+      }
+      std::cout << "WDL scale (pgn-eval-mode) set to: " << options.wdl_scale
+                << std::endl;
+    } else if (0 ==
+               static_cast<std::string>("-wdl-spread").compare(argv[idx])) {
+      if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
+        std::cerr << "Error: -wdl-spread requires a positive float argument."
+                  << std::endl;
+        return 1;
+      }
+      const char* spread_arg = argv[++idx];
+      options.wdl_spread = std::atof(spread_arg);
+      if (options.wdl_spread <= 0.0f) {
+        std::cerr << "Error: -wdl-spread must be a positive number, got '"
+                  << spread_arg << "'." << std::endl;
+        return 1;
+      }
+      std::cout << "WDL spread (pgn-eval-mode) set to: " << options.wdl_spread
+                << std::endl;
+    } else if (0 ==
+               static_cast<std::string>("-visit-budget").compare(argv[idx])) {
+      if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
+        std::cerr << "Error: -visit-budget requires a positive integer."
+                  << std::endl;
+        return 1;
+      }
+      const char* budget_arg = argv[++idx];
+      options.visit_budget = std::atoi(budget_arg);
+      if (options.visit_budget < 0) {
+        std::cerr << "Error: -visit-budget must be >= 0, got '" << budget_arg
+                  << "'." << std::endl;
+        return 1;
+      }
+      std::cout << "Pseudo visit budget set to: " << options.visit_budget
+                << " (policy share = 0.5 + |Q|/2, remainder spread over the "
+                   "other legal moves)"
+                << std::endl;
+    } else if (0 ==
+               static_cast<std::string>("-r50-damp-start").compare(argv[idx])) {
+      if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
+        std::cerr << "Error: -r50-damp-start requires an integer argument."
+                  << std::endl;
+        return 1;
+      }
+      const char* r50_arg = argv[++idx];
+      options.r50_damp_start = std::atoi(r50_arg);
+      if (options.r50_damp_start < 0 || options.r50_damp_start > 100) {
+        std::cerr << "Error: -r50-damp-start must be between 0 and 100 plies, "
+                     "got '"
+                  << r50_arg << "'." << std::endl;
+        return 1;
+      }
+      std::cout << "Rule-50 damping (static eval) starts at halfmove clock: "
+                << options.r50_damp_start << std::endl;
     } else if (0 == static_cast<std::string>("-stockfish").compare(argv[idx])) {
       if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
         std::cerr << "Error: -stockfish requires a path argument." << std::endl;
@@ -168,9 +237,12 @@ int main(int argc, char *argv[]) {
     if (arg[0] == '-') {
       // Skip the value for options that take a parameter
       if (arg == "-stockfish" || arg == "-sf-depth" || arg == "-sf-hash" ||
-          arg == "-files-per-dir" || arg == "-max-games-to-convert" ||
-          arg == "-chunks-per-file" || arg == "-dedup-uniq-buffersize" ||
-          arg == "-dedup-q-ratio" || arg == "-output") {
+          arg == "-wdl-scale" || arg == "-wdl-spread" ||
+          arg == "-r50-damp-start" || arg == "-visit-budget" ||
+          arg == "-files-per-dir" ||
+          arg == "-max-games-to-convert" || arg == "-chunks-per-file" ||
+          arg == "-dedup-uniq-buffersize" || arg == "-dedup-q-ratio" ||
+          arg == "-output") {
         ++idx;  // Skip the next argument (the value)
       }
       continue;

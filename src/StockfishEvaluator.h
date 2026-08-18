@@ -30,16 +30,30 @@ class StockfishEvaluator {
     int score_cp;
     std::string best_move; // Long algebraic notation (e.g. "e2e4")
     uint32_t nodes;
+    // Real WDL straight from the engine's UCI_ShowWDL output, when it
+    // reported one. These are the engine's own numbers -- prefer them over
+    // anything derived from score_cp, which is a lossy projection of the
+    // same information onto a single scalar.
     float draw_prob;       // Draw probability from UCI WDL [0, 1]
+    float q_value;         // (win - loss) from UCI WDL, in [-1, 1]
+    bool has_wdl;          // True if the engine reported a WDL line
     bool ok;               // False if the search failed/timed out
 
-    Result() : score_cp(0), nodes(0), draw_prob(0.0f), ok(false) {}
+    Result()
+        : score_cp(0),
+          nodes(0),
+          draw_prob(0.0f),
+          q_value(0.0f),
+          has_wdl(false),
+          ok(false) {}
   };
 
   // Evaluate current position at given depth
   Result evaluate(int depth);
 
-  // Convert centipawn score to win probability Q value [-1, 1]
+  // Convert centipawn score to win probability Q value [-1, 1].
+  // Delegates to wdl::CentipawnToQ so this matches -pgn-eval-mode exactly;
+  // only a fallback for engines/builds that do not report a WDL.
   static float cpToWinProbability(int centipawns);
 
   // Shutdown the engine

@@ -90,9 +90,36 @@ const int StaticEvaluator::PST_KING_EG[64] = {
 };
 
 float StaticEvaluator::cpToWinProbability(int cp) {
-  // Sigmoid function to convert cp to [-1, 1]
-  // Using standard Stockfish normalization
-  return 2.0f / (1.0f + std::exp(-0.004f * cp)) - 1.0f;
+  // Delegates so all three evaluation modes agree on what a score means.
+  // The old ad-hoc sigmoid (2/(1+exp(-0.004*cp)) - 1) was a third, unfitted
+  // curve; see WdlConversion.h.
+  return wdl::CentipawnToQ(cp, kDefaultWdlScale, kDefaultWdlSpread);
+}
+
+int StaticEvaluator::rule50PlyAfter(board_t* board, int move) {
+  // move_do.cpp does exactly this: ply_nb++, then ply_nb = 0 if the moving
+  // piece is a pawn, and ply_nb = 0 again on a capture (the en-passant and
+  // normal-capture branches both reset it). Castling resets nothing, so it
+  // extends the clock like any other quiet move.
+  const int piece = board->square[move_from(move)];
+  if (piece_is_pawn(piece)) return 0;
+  if (move_is_capture(move, board)) return 0;
+  return board->ply_nb + 1;
+}
+
+void StaticEvaluator::evaluateWDL(board_t* board, int played_move,
+                                  float wdl_scale, float wdl_spread,
+                                  int r50_damp_start, float& q, float& d) {
+  const int cp = evaluate(board);
+  wdl::ScoreToWDL(cp / 100.0f, wdl_scale, wdl_spread, q, d);
+  // Penalise by the clock the played move *leaves behind*, not the one it
+  // inherited. A capture or pawn push zeroes the counter, so it is scored at
+  // full value however long the shuffling before it ran -- which is the
+  // point: those are the moves that make progress, and the eval should say
+  // so. Every other move pushes the clock one ply closer to the draw and is
+  // decremented by correspondingly more.
+  wdl::ApplyRule50Draw(rule50PlyAfter(board, played_move), r50_damp_start, q,
+                       d);
 }
 
 int StaticEvaluator::getPhase(board_t* board) {
