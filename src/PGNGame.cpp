@@ -532,12 +532,16 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
         }
       }
       if (!raw_evals.empty()) {
+        // Guards against a nonsensical value being passed on the command
+        // line; the real defaults live in Options (PGNGame.h) and these must
+        // match them, or -policy-eval-temp 0 would silently behave unlike the
+        // documented default.
         const float temp = (options.policy_eval_temp > 0.0f)
                                ? options.policy_eval_temp
-                               : 150.0f;
+                               : 40.0f;
         const float floor = (options.policy_eval_floor >= 0.0f)
                                 ? options.policy_eval_floor
-                                : 0.01f;
+                                : 0.001f;
         for (const auto& entry : raw_evals) {
           float w = std::exp((entry.second - max_cp) / temp) + floor;
           eval_weights.emplace_back(entry.first, w);

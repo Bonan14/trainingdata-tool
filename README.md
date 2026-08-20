@@ -79,6 +79,9 @@ Pass PGN input files and it will output training data in the same format lc0 sel
 | `-wdl-scale <F>` | Scale for the fitted WDL model in `-pgn-eval-mode` (default: `1.13`, fitted -- see below). Affects both Q and D |
 | `-wdl-spread <F>` | Spread for the fitted WDL model in `-pgn-eval-mode` (default: `0.21`, fitted -- see below). Affects both Q and D |
 | `-visit-budget <N>` | Pseudo visit count written per position (default: `0` / one-hot). When set (e.g. `850`), sets total visits and distributes played move policy share as $0.5 + \|Q\|/2$, spreading remainder over other legal moves |
+| `-policy-static-eval` | Divide the share the played move did not take among the other legal moves by their static evaluation instead of evenly (default: off). Requires `-visit-budget`; see below |
+| `-policy-eval-temp <F>` | Softmax temperature in centipawns for `-policy-static-eval` (default: `40`). Smaller sharpens the spread over alternatives |
+| `-policy-eval-floor <F>` | Weight added to every alternative so none reaches probability zero (default: `0.001`). Larger flattens the spread |
 | `-r50-damp-start <N>` | Halfmove clock at which static evaluation starts decrementing toward a draw (default: `40`). Static mode only -- see below |
 | `-stockfish <path>` | Use Stockfish binary to evaluate positions. Takes the engine's real WDL output directly, so the two flags above don't apply |
 | `-sf-depth <N>` | Stockfish search depth (default: 10) |
@@ -341,6 +344,104 @@ At `-wdl-scale 1.13` and `-wdl-spread 0.21`, any evaluation past $+1.50$ pawns p
 2. **For clean endgame training data**:
   - Rely on Cutechess/Fishtest adjudication rules (typically $+4.00$ to $+6.00$ pawns sustained over multiple plies).
   - Use Syzygy tablebase rescoring (`scripts/rescore_all.py` / `rescore_chunks.py`) to accurately correct terminal win/draw/loss labels and `plies_left` distance-to-mate.
+
+### Weighting the leftover by static eval (`-policy-static-eval`)
+
+The played move takes `0.5 + |Q|/2`. By default everything left over is split
+**evenly** over the other legal moves -- a target asserting that all thirty-odd
+alternatives are equally good, which is false and which the network cannot
+learn. It also fixes the policy cross-entropy floor: cross-entropy cannot go
+below the target's own entropy, so an even spread pins it near 1.14 nats no
+matter how well the network trains.
+
+`-policy-static-eval` replaces the even split. Every alternative is played on a
+copy of the board and scored with the same static evaluator used by the default
+mode, then the leftover is divided by a temperature-scaled softmax taken
+relative to the best alternative:
+
+$$w_i = \exp\!\left(\frac{cp_i - cp_{\max}}{T}\right) + \varepsilon
+\qquad
+p_i = (1 - \text{played\_share}) \cdot \frac{w_i}{\sum_j w_j}$$
+
+Two details matter. **The evaluation is negated** -- `StaticEvaluator` reports
+from the side-to-move's point of view, and after playing an alternative it is
+the opponent to move, so the raw score has to be flipped to mean "good for the
+mover". **The subtraction of $cp_{\max}$** is what keeps `exp` from overflowing
+and is why $T$ is measured relative to the best alternative rather than in
+absolute centipawns.
+
+#### `-policy-eval-temp` (default `40`)
+
+How many centipawns of loss cost a factor of $e$ in weight. A move $T$
+centipawns behind the best alternative gets $e^{-1}$ of its weight; one $2T$
+behind gets $e^{-2}$.
+
+Lower is sharper. Measured over 198,869 positions from four Fishtest PGNs
+(`-visit-budget 850`, floor held at the default `0.001`), this is the entropy
+of the resulting targets -- which is exactly the floor the policy loss
+converges to:
+
+| `-policy-eval-temp` | target entropy | effective moves | median best/worst alternative |
+|---|---|---|---|
+| even spread (feature off) | 1.144 nats | 3.14 | 1.0x |
+| `150` | 1.096 nats | 2.99 | 3.5x |
+| `60` | 0.913 nats | 2.49 | 23x |
+| **`40`** (default) | **0.812 nats** | **2.25** | **104x** |
+| `25` | 0.699 nats | 2.01 | 667x |
+
+150 is too soft to be worth having: quiet moves differ by only tens of
+centipawns, so at that temperature the best and worst alternatives end up
+within a factor of 3.5 of each other and the distribution stays about as flat
+as the even spread it replaced -- 0.05 nats of the 0.33 the default buys.
+
+Note that the "effective moves" column is $e^{H}$ averaged over *all* positions
+including decided ones. Roughly 10% of positions are adjudicated wins where
+$|Q| = 1$, so the played share is 1.0 and the target is one-hot regardless of
+this setting; that is why every row reports the same 6.7% of legal moves at
+zero. The floor applies to the leftover, and in decided positions there is no
+leftover.
+
+#### `-policy-eval-floor` (default `0.001`)
+
+A weight added to every alternative before normalising, so no legal move that
+has any leftover to share can come out at exactly zero.
+
+This is not cosmetic. A zero-probability move is not merely unlikely, it is
+*unreachable* -- MCTS will not search it. Every sacrifice evaluates negative
+after one ply, because a one-ply static evaluation cannot see the
+compensation, so a hard zero teaches the network never to consider sacrifices
+at all. An earlier revision of this feature dropped moves scoring at or below
+zero outright; it zeroed about half of all legal moves and produced fully
+one-hot targets on roughly a quarter of positions. The floor exists to make
+that impossible.
+
+The floor is added *per move*, so its total influence scales with how many
+legal moves there are -- and with ~28 legal moves on average, `0.01` is not
+small. Holding `-policy-eval-temp 40` and varying only the floor over the same
+198,869 positions:
+
+| `-policy-eval-floor` | target entropy | median best/worst alternative |
+|---|---|---|
+| `0.01` | 0.904 nats | 54x |
+| **`0.001`** (default) | **0.812 nats** | **104x** |
+
+At `0.01` the floor contributes ~0.28 of weight against the best move's 1.0,
+spreading roughly a fifth of the leftover uniformly regardless of evaluation:
+it costs 0.09 nats and halves the discrimination between the best and worst
+alternative. Raise it if you want the targets softer, but raise it knowing
+that is what it does.
+
+#### What it does not fix
+
+The evaluator is material, piece-square tables, pawn structure and mobility at
+a single ply. It has no search, no quiescence, and no static exchange
+evaluation, so it does not see recaptures: a capture onto a defended square
+looks like a clean win of material. Expect the weighting to be systematically
+optimistic about captures. It is still far more informative than asserting that
+every alternative is equal, but it is a heuristic prior, not ground truth.
+
+Sacrifices land at the floor rather than being promoted -- the point is that
+they stay reachable, not that they are taught as candidates.
 
 ### Re-fitting against your own data
 

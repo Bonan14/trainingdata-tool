@@ -82,8 +82,34 @@ struct Options {
   // zeroed out, suppresses blunders, and avoids defensive-state collapse.
   // Requires visit_budget, since without it the played move takes everything.
   bool policy_static_eval = false;
-  float policy_eval_temp = 150.0f;   // Softmax temperature in centipawns
-  float policy_eval_floor = 0.01f;   // Baseline probability floor weight
+  // Softmax temperature in centipawns. Smaller sharpens: a move T centipawns
+  // behind the best alternative gets weight exp(-1) of it, so T is literally
+  // "how many centipawns of loss costs a factor of e". Measured over 198,869
+  // positions from four Fishtest PGNs at -visit-budget 850, the target's own
+  // entropy -- which is the floor the policy cross-entropy converges to --
+  // moves with T (floor held at 0.001), along with the median ratio between
+  // the best and worst alternative:
+  //     even spread  1.144 nats     1.0x
+  //     T=150        1.096          3.5x
+  //     T=60         0.913           23x
+  //     T=40         0.812          104x   <- default
+  //     T=25         0.699          667x
+  // 150 was too soft to be worth having: quiet moves differ by tens of
+  // centipawns, so at that temperature best and worst alternatives landed
+  // within a factor of 3.5 and the distribution stayed about as flat as the
+  // even spread it replaced.
+  float policy_eval_temp = 40.0f;
+  // Weight added to every alternative before normalising, so no legal move
+  // with leftover to share can reach probability zero. A zero policy is not
+  // merely "unlikely" -- it is unreachable for MCTS, and every sacrifice
+  // evaluates negative at one ply, so zeros teach the net to never look at
+  // them. The floor is added per move, so its total contribution scales with
+  // the move count, and the average position here has ~28 legal moves. At
+  // T=40 over the same sample: floor 0.01 -> 0.904 nats, 54x; floor 0.001 ->
+  // 0.812 nats, 104x. 0.01 was contributing ~0.28 of weight against the best
+  // move's 1.0 -- a fifth of the leftover spread uniformly regardless of
+  // evaluation, costing 0.09 nats and halving the discrimination.
+  float policy_eval_floor = 0.001f;
 };
 
 struct PGNGame {
