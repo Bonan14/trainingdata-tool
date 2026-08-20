@@ -77,10 +77,13 @@ struct Options {
   // evaluation rather than measured -- see the call site in PGNGame.cpp.
   int visit_budget = 0;
   // Divide the share the played move did not take among the other legal moves
-  // in proportion to their static evaluation, instead of evenly. Moves the
-  // evaluator scores at or below zero get probability exactly 0. Requires
-  // visit_budget, since without it the played move already takes everything.
+  // using a temperature-scaled softmax over relative static evaluations with
+  // a baseline probability floor. Preserves tactical sacrifices from being
+  // zeroed out, suppresses blunders, and avoids defensive-state collapse.
+  // Requires visit_budget, since without it the played move takes everything.
   bool policy_static_eval = false;
+  float policy_eval_temp = 150.0f;   // Softmax temperature in centipawns
+  float policy_eval_floor = 0.01f;   // Baseline probability floor weight
 };
 
 struct PGNGame {

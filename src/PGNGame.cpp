@@ -501,13 +501,19 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
     // Share the leftover out by static evaluation instead of evenly. Each
     // alternative is played on a copy of the board and scored; the score is
     // negated because after the move it is the opponent to play and
-    // StaticEvaluator reports from the side-to-move's point of view. Moves
-    // scoring at or below zero are omitted and get probability 0.
+    // StaticEvaluator reports from the side-to-move's point of view.
+    // We use a temperature-scaled softmax relative to the best-scoring
+    // alternative, plus a baseline floor (epsilon). This ensures every legal
+    // alternative retains non-zero probability (preserving tactical exploration
+    // and sacrifices), blunders are suppressed smoothly toward the floor, and
+    // defensive/lost positions avoid discontinuous collapse.
     EvalPolicyWeights eval_weights;
     const EvalPolicyWeights* eval_weights_ptr = nullptr;
     if (options.policy_static_eval && played_policy_share < 1.0f) {
       list_t alt_list[1];
       gen_legal_moves(alt_list, board);
+      std::vector<std::pair<uint16_t, float>> raw_evals;
+      float max_cp = -1e9f;
       for (int i = 0; i < alt_list->size; ++i) {
         const int alt = alt_list->move[i];
         if (alt == move) continue;  // the played move has its own share
@@ -515,15 +521,29 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
         board_copy(alt_board, board);
         move_do(alt_board, alt);
         const int cp = -StaticEvaluator::evaluate(alt_board);
-        if (cp <= 0) continue;
         const lczero::Move alt_lc0 =
             poly_move_to_lc0_move(alt, board, is_black_move);
         const uint16_t alt_idx = lczero::MoveToNNIndex(alt_lc0, 0);
         if (alt_idx < 1858) {
-          eval_weights.emplace_back(alt_idx, static_cast<float>(cp));
+          raw_evals.emplace_back(alt_idx, static_cast<float>(cp));
+          if (static_cast<float>(cp) > max_cp) {
+            max_cp = static_cast<float>(cp);
+          }
         }
       }
-      eval_weights_ptr = &eval_weights;
+      if (!raw_evals.empty()) {
+        const float temp = (options.policy_eval_temp > 0.0f)
+                               ? options.policy_eval_temp
+                               : 150.0f;
+        const float floor = (options.policy_eval_floor >= 0.0f)
+                                ? options.policy_eval_floor
+                                : 0.01f;
+        for (const auto& entry : raw_evals) {
+          float w = std::exp((entry.second - max_cp) / temp) + floor;
+          eval_weights.emplace_back(entry.first, w);
+        }
+        eval_weights_ptr = &eval_weights;
+      }
     }
 
     lczero::V6TrainingData chunk = get_v6_training_data(

@@ -43,11 +43,11 @@ lczero::V6TrainingData get_v6_training_data(
   float share = (legal_count > 1) ? played_policy_share : 1.0f;
   const float leftover = 1.0f - share;
 
-  if (eval_weights != nullptr && legal_count > 1) {
-    // Eval-weighted spread. Every legal move starts at zero, then the share
-    // the played move did not take is divided among the other moves in
-    // proportion to their static evaluation. A move the evaluator scores at
-    // or below zero never enters eval_weights, so it keeps probability 0.
+  if (eval_weights != nullptr && legal_count > 1 && !eval_weights->empty()) {
+    // Eval-weighted spread. Every legal move gets a non-zero probability
+    // computed from relative static evaluation (softmax + baseline floor).
+    // The share the played move did not take is divided among the other legal
+    // moves in proportion to their weights.
     for (lczero::Move move : legal_moves) {
       uint16_t idx = lczero::MoveToNNIndex(move, 0);
       if (idx < 1858) result.probabilities[idx] = 0.0f;
@@ -61,10 +61,14 @@ lczero::V6TrainingData get_v6_training_data(
         }
       }
     } else {
-      // No alternative scored above zero, so there is nothing to divide the
-      // leftover among. It goes back to the played move rather than being
-      // dropped, which would leave the distribution summing to less than 1.
-      share = 1.0f;
+      // Fallback: divide leftover evenly among all other legal moves
+      const float other_share = leftover / (legal_count - 1);
+      for (lczero::Move move : legal_moves) {
+        uint16_t idx = lczero::MoveToNNIndex(move, 0);
+        if (idx < 1858 && idx != lczero::MoveToNNIndex(played_move, 0)) {
+          result.probabilities[idx] = other_share;
+        }
+      }
     }
   } else {
     const float other_share =

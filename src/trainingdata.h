@@ -10,9 +10,9 @@
 #include <vector>
 
 // (policy index, weight) for the moves that are not the one played. Weights
-// are static evaluations in centipawns from the mover's point of view, and
-// only positive ones appear -- a move the evaluator scores at or below zero
-// is left out and ends up with probability exactly 0.
+// are computed from relative static evaluations using temperature-scaled softmax
+// with a baseline epsilon floor, ensuring all legal moves retain positive
+// probability (preserving tactical exploration and sacrifices).
 using EvalPolicyWeights = std::vector<std::pair<uint16_t, float>>;
 
 lczero::V6TrainingData get_v6_training_data(

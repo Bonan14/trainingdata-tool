@@ -199,9 +199,43 @@ int main(int argc, char *argv[]) {
     } else if (0 == static_cast<std::string>("-policy-static-eval")
                         .compare(argv[idx])) {
       options.policy_static_eval = true;
-      std::cout << "Policy spread: static-eval weighted (moves evaluating <= 0 "
-                   "get probability 0)"
+      std::cout << "Policy spread: static-eval weighted (softmax relative to max "
+                   "eval with floor)"
                 << std::endl;
+    } else if (0 == static_cast<std::string>("-policy-eval-temp")
+                        .compare(argv[idx])) {
+      if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
+        std::cerr
+            << "Error: -policy-eval-temp requires a positive float argument."
+            << std::endl;
+        return 1;
+      }
+      const char* temp_arg = argv[++idx];
+      options.policy_eval_temp = std::atof(temp_arg);
+      if (options.policy_eval_temp <= 0.0f) {
+        std::cerr << "Error: -policy-eval-temp must be a positive number, got '"
+                  << temp_arg << "'." << std::endl;
+        return 1;
+      }
+      std::cout << "Policy eval softmax temperature set to: "
+                << options.policy_eval_temp << " cp" << std::endl;
+    } else if (0 == static_cast<std::string>("-policy-eval-floor")
+                        .compare(argv[idx])) {
+      if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
+        std::cerr
+            << "Error: -policy-eval-floor requires a non-negative float argument."
+            << std::endl;
+        return 1;
+      }
+      const char* floor_arg = argv[++idx];
+      options.policy_eval_floor = std::atof(floor_arg);
+      if (options.policy_eval_floor < 0.0f) {
+        std::cerr << "Error: -policy-eval-floor must be non-negative, got '"
+                  << floor_arg << "'." << std::endl;
+        return 1;
+      }
+      std::cout << "Policy eval baseline floor set to: "
+                << options.policy_eval_floor << std::endl;
     } else if (0 ==
                static_cast<std::string>("-visit-budget").compare(argv[idx])) {
       if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
