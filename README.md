@@ -80,7 +80,9 @@ Pass PGN input files and it will output training data in the same format lc0 sel
 | `-wdl-spread <F>` | Spread for the fitted WDL model in `-pgn-eval-mode` (default: `0.21`, fitted -- see below). Affects both Q and D |
 | `-visit-budget <N>` | Pseudo visit count written per position (default: `0` / one-hot). When set (e.g. `850`), sets total visits and distributes played move policy share as $0.5 + \|Q\|/2$, spreading remainder over other legal moves |
 | `-policy-static-eval` | Divide the share the played move did not take among the other legal moves by their static evaluation instead of evenly (default: off). Requires `-visit-budget`; see below |
-| `-policy-eval-temp <F>` | Softmax temperature in centipawns for `-policy-static-eval` (default: `40`). Smaller sharpens the spread over alternatives |
+| `-policy-eval-temp <F>` | Softmax temperature in centipawns for `-policy-static-eval` (default: `20`). Smaller sharpens the spread over alternatives |
+| `-no-policy-capture-lookahead` | Turn off the SEE capture-reply penalty that `-policy-static-eval` applies by default (see below). Scores alternatives on the raw one-ply eval instead |
+| `-see-selftest` | Run the static-exchange-evaluation self-test and exit. Prints one line per hand-checked position |
 | `-policy-eval-floor <F>` | Weight added to every alternative so none reaches probability zero (default: `0.001`). Larger flattens the spread |
 | `-r50-damp-start <N>` | Halfmove clock at which static evaluation starts decrementing toward a draw (default: `40`). Static mode only -- see below |
 | `-stockfish <path>` | Use Stockfish binary to evaluate positions. Takes the engine's real WDL output directly, so the two flags above don't apply |
@@ -370,36 +372,46 @@ mover". **The subtraction of $cp_{\max}$** is what keeps `exp` from overflowing
 and is why $T$ is measured relative to the best alternative rather than in
 absolute centipawns.
 
-#### `-policy-eval-temp` (default `40`)
+#### `-policy-eval-temp` (default `20`)
 
 How many centipawns of loss cost a factor of $e$ in weight. A move $T$
 centipawns behind the best alternative gets $e^{-1}$ of its weight; one $2T$
 behind gets $e^{-2}$.
 
-Lower is sharper. Measured over 198,869 positions from four Fishtest PGNs
-(`-visit-budget 850`, floor held at the default `0.001`), this is the entropy
+Lower is sharper. Measured over ~50,000 positions from four Fishtest PGNs
+(`-visit-budget 850`, floor `0.001`, capture lookahead on), this is the entropy
 of the resulting targets -- which is exactly the floor the policy loss
 converges to:
 
-| `-policy-eval-temp` | target entropy | effective moves | median best/worst alternative |
-|---|---|---|---|
-| even spread (feature off) | 1.144 nats | 3.14 | 1.0x |
-| `150` | 1.096 nats | 2.99 | 3.5x |
-| `60` | 0.913 nats | 2.49 | 23x |
-| **`40`** (default) | **0.812 nats** | **2.25** | **104x** |
-| `25` | 0.699 nats | 2.01 | 667x |
+| `-policy-eval-temp` | target entropy | effective moves |
+|---|---|---|
+| even spread (feature off) | 1.144 nats | 3.14 |
+| `300` | 1.116 nats | 3.05 |
+| `200` | 1.119 nats | 3.06 |
+| `120` | 1.031 nats | 2.80 |
+| `80` | 1.000 nats | 2.72 |
+| `40` | 0.976 nats | 2.65 |
+| `30` | 0.932 nats | 2.54 |
+| **`20`** (default) | **0.822 nats** | **2.27** |
+| `10` | 0.765 nats | 2.15 |
 
-150 is too soft to be worth having: quiet moves differ by only tens of
-centipawns, so at that temperature the best and worst alternatives end up
-within a factor of 3.5 of each other and the distribution stays about as flat
-as the even spread it replaced -- 0.05 nats of the 0.33 the default buys.
+Above ~200 the curve flattens as the softmax approaches uniform and the target
+converges back on the even spread it was meant to replace.
 
-Note that the "effective moves" column is $e^{H}$ averaged over *all* positions
-including decided ones. Roughly 10% of positions are adjudicated wins where
-$|Q| = 1$, so the played share is 1.0 and the target is one-hot regardless of
-this setting; that is why every row reports the same 6.7% of legal moves at
-zero. The floor applies to the leftover, and in decided positions there is no
-leftover.
+The default is `20` rather than the `40` that was correct before the capture
+lookahead existed. The lookahead widens the score scale -- a hanging piece is
+now a real 300cp rather than a PST rounding error -- which pushes the also-rans
+onto the floor and leaves several near-equal *safe* moves sharing the leftover
+between them. At `40` that came out at 0.976 nats; `20` restores the 0.81-0.82
+the sharper pre-lookahead setting reached, on a ranking that now knows what is
+hanging. `10` buys another 0.06 nats but sharpens hard on the opinion of a
+one-ply evaluator, which is more confidence than it has earned.
+
+Note that "effective moves" is $e^{H}$ averaged over *all* positions including
+decided ones. Roughly 10% are adjudicated wins where $|Q| = 1$, so the played
+share is 1.0 and the target is one-hot regardless of this setting; that is why
+6.7% of legal moves sit at zero in every configuration. The floor applies to
+the leftover, and in a decided position there is no leftover.
 
 #### `-policy-eval-floor` (default `0.001`)
 
@@ -431,17 +443,53 @@ it costs 0.09 nats and halves the discrimination between the best and worst
 alternative. Raise it if you want the targets softer, but raise it knowing
 that is what it does.
 
-#### What it does not fix
+#### The capture-reply lookahead (on by default)
 
-The evaluator is material, piece-square tables, pawn structure and mobility at
-a single ply. It has no search, no quiescence, and no static exchange
-evaluation, so it does not see recaptures: a capture onto a defended square
-looks like a clean win of material. Expect the weighting to be systematically
-optimistic about captures. It is still far more informative than asserting that
-every alternative is equal, but it is a heuristic prior, not ground truth.
+`evaluate()` is a one-ply score. It counts material, piece-square tables and
+pawn structure on the position *after* the alternative, and it has no idea that
+the alternative just left a rook en prise -- a hung piece and a good quiet move
+score the same. Left uncorrected, that is the single largest error in the
+ranking.
 
-Sacrifices land at the floor rather than being promoted -- the point is that
-they stay reachable, not that they are taught as candidates.
+So before scoring an alternative, the tool walks the mover's own pieces, and
+for any that the opponent attacks it resolves the exchange with **static
+exchange evaluation**, then subtracts the best capture the opponent has:
+
+$$cp = -\,\text{evaluate}(\text{after}) - \max_{p}\ \text{SEE}(p)$$
+
+SEE plays the capture sequence out on the square, both sides always recapturing
+with their cheapest attacker, so a defended piece is not mistaken for a free
+one -- and because attackers are removed from the board copy as they are used,
+a slider behind one joins the sequence on its own. That is what makes this
+different from just counting attackers.
+
+It costs about **30%** on top of `-policy-static-eval` (400 games: 1.28 s to
+1.67 s; 1.00 s with the feature off entirely). It is that cheap because there
+is no move generation and no recursion: the cheapest-attacker scan doubles as
+the "is anything actually attacked here" test, so the board copy is only paid
+on squares that are.
+
+Pass `-no-policy-capture-lookahead` to score on the raw one-ply eval instead.
+If you do, put `-policy-eval-temp` back to around `40` -- the two are fitted
+together.
+
+`-see-selftest` runs the exchange logic against hand-checked positions
+(undefended piece, defended piece, equal trade, a capture that is illegal
+because only the king attacks, and an x-ray). Expected values follow from this
+tool's piece values, so they move if those constants do.
+
+#### What it still does not fix
+
+SEE resolves the exchange on one square. It does not see a fork, a discovered
+attack, a pin that only bites next move, or any tactic that needs a quiet move
+in the middle -- that would take a real quiescence search, which costs roughly
+an order of magnitude rather than 30%. It also ignores promotions, en passant,
+and treats a pinned defender as a defender.
+
+Sacrifices are pushed toward the floor rather than promoted. A real sacrifice
+loses material by definition, and one ply of capture resolution cannot see the
+compensation. The point of the floor is that they stay *reachable*, not that
+they are taught as candidates.
 
 ### Re-fitting against your own data
 

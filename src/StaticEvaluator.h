@@ -40,6 +40,22 @@ public:
   // Convert centipawns to win probability in [-1, 1] range
   static float cpToWinProbability(int cp);
 
+  // Static exchange evaluation on `to`: the material `colour` comes out ahead
+  // by starting the capture sequence there, with both sides always recapturing
+  // using their least valuable attacker. Returns 0 when `colour` has no
+  // attacker, so a defended square is never mistaken for a free piece.
+  //
+  // Ignores promotions, en passant and absolute pins -- a pinned defender is
+  // counted as a defender. That is the usual SEE approximation and it errs
+  // toward calling a square defended, which is the safe direction here.
+  static int see(const board_t* board, int to, int colour);
+
+  // The material the side that just moved stands to lose to the opponent's
+  // single best capture, or 0 if nothing is hanging. evaluate() is a one-ply
+  // score and cannot see that a move left a piece en prise; this is what
+  // closes that gap without paying for a real quiescence search.
+  static int bestCaptureLoss(const board_t* board);
+
 private:
   // Material values (centipawns)
   static constexpr int PAWN_VALUE   = 100;
@@ -47,6 +63,8 @@ private:
   static constexpr int BISHOP_VALUE = 330;
   static constexpr int ROOK_VALUE   = 500;
   static constexpr int QUEEN_VALUE  = 900;
+  // Not a real value -- it only has to order the king last as a capturer.
+  static constexpr int KING_VALUE   = 10000;
   
   // Bonuses/penalties
   static constexpr int BISHOP_PAIR_BONUS = 50;
@@ -69,6 +87,11 @@ private:
   static int evaluatePawnStructure(board_t* board);
   static int evaluateMobility(board_t* board);
   static int getPhase(board_t* board);
+
+  // Centipawn value of a raw polyglot piece encoding; 0 for Empty.
+  static int pieceValue(int raw_piece);
+  // Square of the cheapest piece of `colour` attacking `to`, or SquareNone.
+  static int leastValuableAttacker(const board_t* board, int to, int colour);
 };
 
 #endif // STATIC_EVALUATOR_H

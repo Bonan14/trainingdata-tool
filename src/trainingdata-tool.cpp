@@ -16,6 +16,7 @@
 #endif
 
 #include "PGNGame.h"
+#include "StaticEvaluator.h"
 #include "StockfishEvaluator.h"
 #include "TrainingDataDedup.h"
 #include "TrainingDataReader.h"
@@ -147,6 +148,53 @@ void convert_games(const std::string &pgn_file_name, Options options,
   pgn_close(pgn);
 }
 
+// Hand-checked exchange positions for StaticEvaluator::see / bestCaptureLoss.
+// Expected values follow from the tool's own piece values (P=100, N=320,
+// B=330, R=500, Q=900), not from any external engine's, so they move if those
+// constants do. Every position has the capturing side to move, so
+// bestCaptureLoss reports what the side that just moved is about to lose.
+// Run with -see-selftest.
+static int run_see_selftest() {
+  struct Case {
+    const char* fen;
+    int expected;
+    const char* what;
+  };
+  const Case cases[] = {
+      {"4k3/8/8/8/8/8/8/4K3 b - - 0 1", 0, "bare kings, nothing hanging"},
+      {"4k3/8/3p4/4N3/8/8/8/4K3 b - - 0 1", 320,
+       "undefended knight, pawn takes it"},
+      {"4k3/8/3p4/4N3/3P4/8/8/4K3 b - - 0 1", 220,
+       "knight defended by a pawn: 320 won minus the 100 given back"},
+      {"4k3/8/8/8/8/8/8/K3R3 b - - 0 1", 0, "rook present but not attacked"},
+      {"4r2k/8/8/8/8/8/8/K3R3 b - - 0 1", 500,
+       "rook attacked down an open file with nothing defending it"},
+      {"4r2k/8/8/8/8/8/8/3KR3 b - - 0 1", 0,
+       "same rook, now defended by the king: 500 won, 500 given back"},
+      {"8/8/3k4/4P3/3P4/8/8/4K3 b - - 0 1", 0,
+       "pawn attacked only by the king but defended, so the capture is illegal"},
+      {"k3r3/4r3/8/4P3/8/8/8/K3R3 b - - 0 1", 100,
+       "x-ray: the rear rook must join once the front one is swapped off"},
+  };
+  int failures = 0;
+  for (const Case& c : cases) {
+    board_t board[1];
+    if (!board_from_fen(board, c.fen)) {
+      std::cerr << "  FAIL (bad FEN): " << c.fen << std::endl;
+      ++failures;
+      continue;
+    }
+    const int got = StaticEvaluator::bestCaptureLoss(board);
+    const bool ok = (got == c.expected);
+    if (!ok) ++failures;
+    std::cout << (ok ? "  ok   " : "  FAIL ") << "expected " << c.expected
+              << ", got " << got << "  -- " << c.what << std::endl;
+  }
+  std::cout << (failures == 0 ? "SEE self-test passed" : "SEE self-test FAILED")
+            << " (" << failures << " failure(s))" << std::endl;
+  return failures == 0 ? 0 : 1;
+}
+
 int main(int argc, char *argv[]) {
   std::cout << "TrainingData Tool v1.1 (Stockfish Arg Fix)" << std::endl;
   lczero::InitializeMagicBitboards();
@@ -155,6 +203,9 @@ int main(int argc, char *argv[]) {
   bool deduplication_mode = false;
 
   for (size_t idx = 0; idx < argc; ++idx) {
+    if (0 == static_cast<std::string>("-see-selftest").compare(argv[idx])) {
+      return run_see_selftest();
+    }
     if (0 == static_cast<std::string>("-v").compare(argv[idx])) {
       std::cout << "Verbose mode ON" << std::endl;
       options.verbose = true;
@@ -201,6 +252,11 @@ int main(int argc, char *argv[]) {
       options.policy_static_eval = true;
       std::cout << "Policy spread: static-eval weighted (softmax relative to max "
                    "eval with floor)"
+                << std::endl;
+    } else if (0 == static_cast<std::string>("-no-policy-capture-lookahead")
+                        .compare(argv[idx])) {
+      options.policy_capture_lookahead = false;
+      std::cout << "Policy capture-reply lookahead (SEE): disabled"
                 << std::endl;
     } else if (0 == static_cast<std::string>("-policy-eval-temp")
                         .compare(argv[idx])) {

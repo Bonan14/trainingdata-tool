@@ -520,7 +520,14 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
         board_t alt_board[1];
         board_copy(alt_board, board);
         move_do(alt_board, alt);
-        const int cp = -StaticEvaluator::evaluate(alt_board);
+        // Negated because after the alternative it is the opponent to
+        // play and StaticEvaluator reports from the side-to-move's point of
+        // view; the capture-reply penalty is already the mover's loss, so it
+        // subtracts directly.
+        int cp = -StaticEvaluator::evaluate(alt_board);
+        if (options.policy_capture_lookahead) {
+          cp -= StaticEvaluator::bestCaptureLoss(alt_board);
+        }
         const lczero::Move alt_lc0 =
             poly_move_to_lc0_move(alt, board, is_black_move);
         const uint16_t alt_idx = lczero::MoveToNNIndex(alt_lc0, 0);
@@ -538,7 +545,7 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
         // documented default.
         const float temp = (options.policy_eval_temp > 0.0f)
                                ? options.policy_eval_temp
-                               : 40.0f;
+                               : 20.0f;
         const float floor = (options.policy_eval_floor >= 0.0f)
                                 ? options.policy_eval_floor
                                 : 0.001f;

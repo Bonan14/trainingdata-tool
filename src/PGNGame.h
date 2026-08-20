@@ -84,21 +84,28 @@ struct Options {
   bool policy_static_eval = false;
   // Softmax temperature in centipawns. Smaller sharpens: a move T centipawns
   // behind the best alternative gets weight exp(-1) of it, so T is literally
-  // "how many centipawns of loss costs a factor of e". Measured over 198,869
-  // positions from four Fishtest PGNs at -visit-budget 850, the target's own
-  // entropy -- which is the floor the policy cross-entropy converges to --
-  // moves with T (floor held at 0.001), along with the median ratio between
-  // the best and worst alternative:
-  //     even spread  1.144 nats     1.0x
-  //     T=150        1.096          3.5x
-  //     T=60         0.913           23x
-  //     T=40         0.812          104x   <- default
-  //     T=25         0.699          667x
-  // 150 was too soft to be worth having: quiet moves differ by tens of
-  // centipawns, so at that temperature best and worst alternatives landed
-  // within a factor of 3.5 and the distribution stayed about as flat as the
-  // even spread it replaced.
-  float policy_eval_temp = 40.0f;
+  // "how many centipawns of loss costs a factor of e". Measured over ~50k
+  // positions from four Fishtest PGNs at -visit-budget 850, floor 0.001, with
+  // policy_capture_lookahead on -- the target's own entropy, which is the
+  // floor the policy cross-entropy converges to:
+  //     even spread  1.144 nats
+  //     T=300        1.116
+  //     T=200        1.119
+  //     T=120        1.031
+  //     T=80         1.000
+  //     T=40         0.976
+  //     T=30         0.932
+  //     T=20         0.822        <- default
+  //     T=10         0.765
+  // 20 rather than the 40 that was right before the capture lookahead: the
+  // lookahead widens the score scale (a hanging piece is now a real 300cp
+  // instead of a PST rounding error), which pushes the also-rans onto the
+  // floor and leaves several near-equal safe moves sharing the leftover. At
+  // T=40 that came to 0.976 nats; T=20 restores the 0.81-0.82 the sharper
+  // pre-lookahead setting reached, on a ranking that now knows what is
+  // hanging. T=10 buys another 0.06 nats but sharpens hard on the opinion of
+  // a one-ply evaluator, which is more confidence than it has earned.
+  float policy_eval_temp = 20.0f;
   // Weight added to every alternative before normalising, so no legal move
   // with leftover to share can reach probability zero. A zero policy is not
   // merely "unlikely" -- it is unreachable for MCTS, and every sacrifice
@@ -110,6 +117,14 @@ struct Options {
   // move's 1.0 -- a fifth of the leftover spread uniformly regardless of
   // evaluation, costing 0.09 nats and halving the discrimination.
   float policy_eval_floor = 0.001f;
+  // Before scoring an alternative, subtract whatever the opponent's single
+  // best capture reply wins, resolved with SEE. evaluate() is a one-ply score
+  // and cannot see that the alternative just hung a piece; without this, the
+  // material term happily reports a piece left en prise as no worse than any
+  // other quiet move. This is the cheap 90% of what a quiescence search would
+  // buy: one SEE per attacked piece, no move generation, no recursion.
+  // Only has an effect together with policy_static_eval.
+  bool policy_capture_lookahead = true;
 };
 
 struct PGNGame {

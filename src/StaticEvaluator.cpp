@@ -369,6 +369,108 @@ int StaticEvaluator::evaluateMobility(board_t* board) {
   return score;
 }
 
+int StaticEvaluator::pieceValue(int raw_piece) {
+  if (raw_piece == Empty) return 0;
+  switch (piece_to_12(raw_piece)) {
+    case WhitePawn12:
+    case BlackPawn12:   return PAWN_VALUE;
+    case WhiteKnight12:
+    case BlackKnight12: return KNIGHT_VALUE;
+    case WhiteBishop12:
+    case BlackBishop12: return BISHOP_VALUE;
+    case WhiteRook12:
+    case BlackRook12:   return ROOK_VALUE;
+    case WhiteQueen12:
+    case BlackQueen12:  return QUEEN_VALUE;
+    default:            return KING_VALUE;
+  }
+}
+
+int StaticEvaluator::leastValuableAttacker(const board_t* board, int to,
+                                           int colour) {
+  int best_from = SquareNone;
+  int best_value = KING_VALUE + 1;
+  for (const uint8* ptr = board->list[colour]; *ptr != SquareNone; ++ptr) {
+    const int from = *ptr;
+    const int piece = board->square[from];
+    // see() empties square[] as pieces are swapped off but leaves list[]
+    // alone, so already-captured squares show up here as Empty and are
+    // skipped. That is also exactly what makes x-rays work: piece_attack
+    // re-walks the ray against the updated square[], so a slider behind a
+    // removed attacker joins the sequence on its own.
+    if (piece == Empty) continue;
+    if (!piece_attack(board, piece, from, to)) continue;
+    const int value = pieceValue(piece);
+    if (value < best_value) {
+      best_value = value;
+      best_from = from;
+    }
+  }
+  return best_from;
+}
+
+int StaticEvaluator::see(const board_t* board, int to, int colour) {
+  // Cheap rejection first: no attacker means no sequence, and this saves the
+  // board copy on the large majority of squares, which are not attacked.
+  if (leastValuableAttacker(board, to, colour) == SquareNone) return 0;
+
+  // A scratch copy so pieces can be removed as they are captured. Only
+  // square[] is maintained -- list[], pos[] and number[] go stale, which is
+  // fine because piece_attack reads square[] only. Do not hand this board to
+  // anything that calls board_is_ok.
+  board_t work[1];
+  board_copy(work, board);
+
+  // Swap algorithm: gain[d] is the material balance after the d-th capture,
+  // assuming the side to move at that depth chooses to continue.
+  int gain[32];
+  int depth = 0;
+  gain[0] = pieceValue(work->square[to]);
+  int stm = colour;
+
+  while (depth + 1 < 32) {
+    const int from = leastValuableAttacker(work, to, stm);
+    if (from == SquareNone) break;
+    // The king may only take when the defender has nothing left pointing at
+    // the square; otherwise the capture is illegal and the sequence ends.
+    if (piece_is_king(work->square[from]) &&
+        leastValuableAttacker(work, to, colour_opp(stm)) != SquareNone) {
+      break;
+    }
+    ++depth;
+    gain[depth] = pieceValue(work->square[from]) - gain[depth - 1];
+    // The usual "if (max(-gain[d-1], gain[d]) < 0) break" shortcut is
+    // deliberately NOT here. It exits before the fold-back below has a chance
+    // to run, and at depth 1 the fold-back is a no-op, so a defended piece
+    // comes back as the full piece value rather than the net: pawn takes an
+    // undefended-looking knight scores 320 instead of 220. Exchange sequences
+    // are a handful of captures deep, so running them out costs nothing.
+    work->square[from] = Empty;
+    stm = colour_opp(stm);
+  }
+
+  if (depth == 0) return 0;
+  // Fold back: at every depth the side to move takes the better of standing
+  // pat and continuing.
+  while (--depth) {
+    gain[depth - 1] = -(std::max)(-gain[depth - 1], gain[depth]);
+  }
+  return gain[0];
+}
+
+int StaticEvaluator::bestCaptureLoss(const board_t* board) {
+  const int capturer = board->turn;           // the side about to move
+  const int owner = colour_opp(capturer);     // the side that just moved
+  int worst = 0;
+  for (const uint8* ptr = board->list[owner]; *ptr != SquareNone; ++ptr) {
+    const int sq = *ptr;
+    if (piece_is_king(board->square[sq])) continue;  // cannot be captured
+    const int loss = see(board, sq, capturer);
+    if (loss > worst) worst = loss;
+  }
+  return worst;
+}
+
 int StaticEvaluator::evaluate(board_t* board) {
   int phase = getPhase(board);
   
