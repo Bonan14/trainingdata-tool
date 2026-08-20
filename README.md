@@ -89,7 +89,10 @@ Pass PGN input files and it will output training data in the same format lc0 sel
 | `-deduplication-mode` | Deduplicate existing training data |
 | `-dedup-uniq-buffersize <N>` | Unique buffer size for deduplication mode (default: 50000) |
 | `-dedup-q-ratio <F>` | Q-ratio threshold used during deduplication (default: 1.0) |
-| `-output <prefix>` | Output prefix for generated training data files (default: `supervised-`) |
+| `-threads <N>` | Number of worker threads for parallel game conversion (default: all CPU threads, e.g. `8`) |
+| `-name <name>` | Custom dataset name prefix for output folders (default: `supervised` -> creates `supervised-0/`, `supervised-1/`, etc. E.g. `-name "Fishtest-New"` creates `Fishtest-New-0/`, `Fishtest-New-1/`) |
+| `-output-dir <path>` | Target output directory where folders will be created (e.g. `-output-dir "C:/Users/.../training-data" -name "Fishtest"`) |
+| `-output <prefix>` | Raw output prefix for generated training data files (default: `supervised-`) |
 
 By default, the tool uses static evaluation unless `-stockfish` or `-pgn-eval-mode` is enabled.
 
@@ -310,15 +313,15 @@ At `-wdl-scale 1.13` and `-wdl-spread 0.21`, any evaluation past $+1.50$ pawns p
 
 | Eval (Pawns) | Current (`spread 0.21`) | Moderate (`spread 0.45`) | Smooth (`spread 0.60`) |
 | --- | --- | --- | --- |
-| **$0.00$** | $Q=0.000$ $\to$ **50.0%** share | $Q=0.000$ $\to$ **50.0%** share | $Q=0.000$ $\to$ **50.0%** share |
-| **$+0.25$** | $Q=0.030$ $\to$ **51.5%** share | $Q=0.100$ $\to$ **55.0%** share | $Q=0.112$ $\to$ **55.6%** share |
-| **$+0.50$** | $Q=0.111$ $\to$ **55.6%** share | $Q=0.213$ $\to$ **60.7%** share | $Q=0.227$ $\to$ **61.4%** share |
-| **$+0.75$** | $Q=0.326$ $\to$ **66.3%** share | $Q=0.345$ $\to$ **67.2%** share | $Q=0.346$ $\to$ **67.3%** share |
-| **$+1.00$** | $Q=0.650$ $\to$ **82.5%** share | $Q=0.488$ $\to$ **74.4%** share | $Q=0.466$ $\to$ **73.3%** share |
-| **$+1.50$** | $Q=0.965$ $\to$ **98.2%** share *(saturated)* | $Q=0.748$ $\to$ **87.4%** share | $Q=0.682$ $\to$ **84.1%** share |
-| **$+2.00$** | $Q=0.998$ $\to$ **99.9%** share *(saturated)* | $Q=0.901$ $\to$ **95.0%** share | $Q=0.834$ $\to$ **91.7%** share |
-| **$+3.00$** | $Q=1.000$ $\to$ **100.0%** share | $Q=0.988$ $\to$ **99.4%** share | $Q=0.964$ $\to$ **98.2%** share |
-| **$+4.00$** | $Q=1.000$ $\to$ **100.0%** share | $Q=0.999$ $\to$ **100.0%** share | $Q=0.995$ $\to$ **99.8%** share |
+| **$0.00$** | $Q=0.000$ -> **50.0%** share | $Q=0.000$ -> **50.0%** share | $Q=0.000$ -> **50.0%** share |
+| **$+0.25$** | $Q=0.030$ -> **51.5%** share | $Q=0.100$ -> **55.0%** share | $Q=0.112$ -> **55.6%** share |
+| **$+0.50$** | $Q=0.111$ -> **55.6%** share | $Q=0.213$ -> **60.7%** share | $Q=0.227$ -> **61.4%** share |
+| **$+0.75$** | $Q=0.326$ -> **66.3%** share | $Q=0.345$ -> **67.2%** share | $Q=0.346$ -> **67.3%** share |
+| **$+1.00$** | $Q=0.650$ -> **82.5%** share | $Q=0.488$ -> **74.4%** share | $Q=0.466$ -> **73.3%** share |
+| **$+1.50$** | $Q=0.965$ -> **98.2%** share *(saturated)* | $Q=0.748$ -> **87.4%** share | $Q=0.682$ -> **84.1%** share |
+| **$+2.00$** | $Q=0.998$ -> **99.9%** share *(saturated)* | $Q=0.901$ -> **95.0%** share | $Q=0.834$ -> **91.7%** share |
+| **$+3.00$** | $Q=1.000$ -> **100.0%** share | $Q=0.988$ -> **99.4%** share | $Q=0.964$ -> **98.2%** share |
+| **$+4.00$** | $Q=1.000$ -> **100.0%** share | $Q=0.999$ -> **100.0%** share | $Q=0.995$ -> **99.8%** share |
 
 #### 3. Practical Guidance: What to Tweak vs. What NOT to Tweak
 

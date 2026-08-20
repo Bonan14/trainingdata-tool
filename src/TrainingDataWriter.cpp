@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
+#include <system_error>
 
 TrainingDataWriter::TrainingDataWriter(size_t max_files_per_directory,
                                        size_t chunks_per_file,
@@ -16,24 +17,44 @@ TrainingDataWriter::TrainingDataWriter(size_t max_files_per_directory,
 
 void TrainingDataWriter::EnqueueChunks(
     const std::vector<lczero::V6TrainingData> &chunks) {
-  // Write all chunks from this game to a single file (one game per file)
-  std::string directory = dir_prefix + std::to_string(files_written / max_files_per_directory);
-  std::filesystem::create_directories(directory);
+  if (chunks.empty()) return;
+
+  // Only the file index and the directory bookkeeping need the lock. Gzip
+  // compression and the write itself are the expensive part and are thread
+  // local once the index is reserved, so they must happen outside it --
+  // holding the mutex across them serialised every worker onto one core and
+  // was why more threads did not make this faster.
+  size_t index;
+  std::string directory;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    index = files_written++;
+    directory = dir_prefix + std::to_string(index / max_files_per_directory);
+    // The mkdir stays inside the lock. Doing it outside means a second worker
+    // can see the directory already marked as created and start writing into
+    // it before the first worker's create_directories has returned. It only
+    // runs once per max_files_per_directory files, so it costs nothing.
+    if (created_dirs_.insert(directory).second) {
+      std::error_code ec;
+      std::filesystem::create_directories(directory, ec);
+    }
+  }
 
   std::ostringstream oss;
-  oss << directory << "/game_" << std::setfill('0') << std::setw(6) << files_written << ".gz";
-  std::string filename = oss.str();
+  oss << directory << "/game_" << std::setfill('0') << std::setw(6) << index
+      << ".gz";
 
-  lczero::TrainingDataWriter writer(filename);
+  // Write all chunks from this game to a single file (one game per file)
+  lczero::TrainingDataWriter writer(oss.str());
   for (const auto& chunk : chunks) {
     writer.WriteChunk(chunk);
   }
   writer.Finalize();
-  files_written++;
 }
 
 void TrainingDataWriter::EnqueueChunks(
     const std::unordered_map<lczero::V6TrainingData, size_t> &chunks) {
+  std::lock_guard<std::mutex> lock(mutex_);
   for (auto chunk : chunks) {
     chunks_queue.push(chunk.first);
     WriteQueuedChunks(chunks_per_file);
@@ -59,4 +80,12 @@ void TrainingDataWriter::WriteQueuedChunks(size_t min_chunks) {
   }
 }
 
-void TrainingDataWriter::Finalize() { WriteQueuedChunks(0); }
+void TrainingDataWriter::Finalize() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  WriteQueuedChunks(0);
+}
+
+size_t TrainingDataWriter::FilesWritten() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return files_written;
+}

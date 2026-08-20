@@ -53,3 +53,6 @@ Project\.cbp
 
 __pycache__/
 *.pyc
+
+# Analysis output, not source
+graphify-out/

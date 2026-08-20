@@ -83,6 +83,10 @@ struct PGNGame {
   char fen[PGN_STRING_SIZE];
   std::vector<PGNMoveInfo> moves;
 
+  PGNGame() {
+    result[0] = '\0';
+    fen[0] = '\0';
+  }
   explicit PGNGame(pgn_t* pgn);
   std::vector<lczero::V6TrainingData> getChunks(Options options,
                                                  StockfishEvaluator* evaluator = nullptr,
