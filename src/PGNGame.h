@@ -76,6 +76,11 @@ struct Options {
   // contains no search, so any value here is reconstructed from the
   // evaluation rather than measured -- see the call site in PGNGame.cpp.
   int visit_budget = 0;
+  // Divide the share the played move did not take among the other legal moves
+  // in proportion to their static evaluation, instead of evenly. Moves the
+  // evaluator scores at or below zero get probability exactly 0. Requires
+  // visit_budget, since without it the played move already takes everything.
+  bool policy_static_eval = false;
 };
 
 struct PGNGame {

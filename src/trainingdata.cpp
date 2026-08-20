@@ -17,7 +17,7 @@ lczero::V6TrainingData get_v6_training_data(
     lczero::GameResult game_result, const lczero::PositionHistory& history,
     lczero::Move played_move, lczero::MoveList legal_moves, float Q,
     lczero::Move best_move, uint32_t visits, int plies_left, float D,
-    float played_policy_share) {
+    float played_policy_share, const EvalPolicyWeights* eval_weights) {
   lczero::V6TrainingData result;
   std::memset(&result, 0, sizeof(result));
 
@@ -40,14 +40,40 @@ lczero::V6TrainingData get_v6_training_data(
   for (lczero::Move move : legal_moves) {
     if (lczero::MoveToNNIndex(move, 0) < 1858) ++legal_count;
   }
-  const float share = (legal_count > 1) ? played_policy_share : 1.0f;
-  const float other_share =
-      (legal_count > 1) ? (1.0f - share) / (legal_count - 1) : 0.0f;
+  float share = (legal_count > 1) ? played_policy_share : 1.0f;
+  const float leftover = 1.0f - share;
 
-  for (lczero::Move move : legal_moves) {
-    uint16_t idx = lczero::MoveToNNIndex(move, 0);
-    if (idx < 1858) {
-      result.probabilities[idx] = other_share;
+  if (eval_weights != nullptr && legal_count > 1) {
+    // Eval-weighted spread. Every legal move starts at zero, then the share
+    // the played move did not take is divided among the other moves in
+    // proportion to their static evaluation. A move the evaluator scores at
+    // or below zero never enters eval_weights, so it keeps probability 0.
+    for (lczero::Move move : legal_moves) {
+      uint16_t idx = lczero::MoveToNNIndex(move, 0);
+      if (idx < 1858) result.probabilities[idx] = 0.0f;
+    }
+    float total = 0.0f;
+    for (const auto& entry : *eval_weights) total += entry.second;
+    if (total > 0.0f) {
+      for (const auto& entry : *eval_weights) {
+        if (entry.first < 1858 && entry.second > 0.0f) {
+          result.probabilities[entry.first] = leftover * entry.second / total;
+        }
+      }
+    } else {
+      // No alternative scored above zero, so there is nothing to divide the
+      // leftover among. It goes back to the played move rather than being
+      // dropped, which would leave the distribution summing to less than 1.
+      share = 1.0f;
+    }
+  } else {
+    const float other_share =
+        (legal_count > 1) ? leftover / (legal_count - 1) : 0.0f;
+    for (lczero::Move move : legal_moves) {
+      uint16_t idx = lczero::MoveToNNIndex(move, 0);
+      if (idx < 1858) {
+        result.probabilities[idx] = other_share;
+      }
     }
   }
 

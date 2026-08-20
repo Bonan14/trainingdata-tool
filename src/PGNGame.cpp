@@ -498,9 +498,38 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
       chunk_visits = static_cast<uint32_t>(options.visit_budget);
     }
 
+    // Share the leftover out by static evaluation instead of evenly. Each
+    // alternative is played on a copy of the board and scored; the score is
+    // negated because after the move it is the opponent to play and
+    // StaticEvaluator reports from the side-to-move's point of view. Moves
+    // scoring at or below zero are omitted and get probability 0.
+    EvalPolicyWeights eval_weights;
+    const EvalPolicyWeights* eval_weights_ptr = nullptr;
+    if (options.policy_static_eval && played_policy_share < 1.0f) {
+      list_t alt_list[1];
+      gen_legal_moves(alt_list, board);
+      for (int i = 0; i < alt_list->size; ++i) {
+        const int alt = alt_list->move[i];
+        if (alt == move) continue;  // the played move has its own share
+        board_t alt_board[1];
+        board_copy(alt_board, board);
+        move_do(alt_board, alt);
+        const int cp = -StaticEvaluator::evaluate(alt_board);
+        if (cp <= 0) continue;
+        const lczero::Move alt_lc0 =
+            poly_move_to_lc0_move(alt, board, is_black_move);
+        const uint16_t alt_idx = lczero::MoveToNNIndex(alt_lc0, 0);
+        if (alt_idx < 1858) {
+          eval_weights.emplace_back(alt_idx, static_cast<float>(cp));
+        }
+      }
+      eval_weights_ptr = &eval_weights;
+    }
+
     lczero::V6TrainingData chunk = get_v6_training_data(
         game_result, position_history, lc0_move, legal_moves, Q, best_move,
-        chunk_visits, plies_left_placeholder, D, played_policy_share);
+        chunk_visits, plies_left_placeholder, D, played_policy_share,
+        eval_weights_ptr);
     chunks.push_back(chunk);
     if (options.verbose) {
       std::string result;

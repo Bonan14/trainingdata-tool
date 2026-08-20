@@ -196,6 +196,12 @@ int main(int argc, char *argv[]) {
       }
       std::cout << "WDL spread (pgn-eval-mode) set to: " << options.wdl_spread
                 << std::endl;
+    } else if (0 == static_cast<std::string>("-policy-static-eval")
+                        .compare(argv[idx])) {
+      options.policy_static_eval = true;
+      std::cout << "Policy spread: static-eval weighted (moves evaluating <= 0 "
+                   "get probability 0)"
+                << std::endl;
     } else if (0 ==
                static_cast<std::string>("-visit-budget").compare(argv[idx])) {
       if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
