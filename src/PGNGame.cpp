@@ -254,6 +254,7 @@ lczero::Move poly_move_to_lc0_move(move_t move, board_t* board,
 
 PGNGame::PGNGame(pgn_t* pgn) {
   strncpy(this->result, pgn->result, PGN_STRING_SIZE);
+  strncpy(this->termination, pgn->termination, PGN_STRING_SIZE);
   strncpy(this->fen, pgn->fen, PGN_STRING_SIZE);
 
   char str[256];
@@ -611,7 +612,45 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
         chunks[i].played_q = -chunks[i + 1].best_q;
       }
     }
-    // For the last chunk, the played move led directly to the game result
+    // Forfeit repair: believe the evaluation over the recorded result when
+    // the two clearly disagree. See Options::forfeit_repair_threshold.
+    //
+    // Both best_q and result_q on the final chunk are relative to the side
+    // to move THERE, so their product needs no perspective correction: it
+    // is +1 when the final position supports the result and negative when
+    // it contradicts it. Draws are excluded -- result_d != 0 means there is
+    // no decisive label to be wrong about.
+    if (options.forfeit_repair_threshold > 0.0f &&
+        chunks.back().result_d == 0.0f) {
+      // The PGN says outright why the game ended, which beats inferring it.
+      // Fishtest writes "time forfeit" when an engine ran out of clock and
+      // "abandoned" when it died; both award the point against that engine
+      // regardless of the position. "adjudication" and "normal" are real
+      // chess outcomes and are never touched, however odd their evaluation
+      // looks -- a game legitimately won at +0.73 is still legitimately won.
+      const bool forfeited =
+          strcmp(this->termination, "time forfeit") == 0 ||
+          strcmp(this->termination, "abandoned") == 0;
+      const float agreement = chunks.back().best_q * chunks.back().result_q;
+      if (forfeited && agreement < -options.forfeit_repair_threshold) {
+        // Flipping the game result negates result_q at every ply: the
+        // stored value is already per-ply side-to-move relative, so one
+        // negation carries the alternation with it. result_d stays 0 --
+        // the game is still decisive, just decided the other way.
+        for (auto& chunk : chunks) {
+          chunk.result_q = -chunk.result_q;
+        }
+        if (options.verbose) {
+          std::cout << "Forfeit repair (" << this->termination
+                    << "): final eval " << chunks.back().best_q
+                    << " contradicted awarded result (agreement " << agreement
+                    << "); result flipped." << std::endl;
+        }
+      }
+    }
+
+    // For the last chunk, the played move led directly to the game result.
+    // Assigned after the repair above so it picks up a flipped result.
     chunks.back().played_q = chunks.back().result_q;
   }
 

@@ -97,6 +97,17 @@ void convert_games(const std::string &pgn_file_name, Options options,
     workers_count = static_cast<int>(std::thread::hardware_concurrency());
     if (workers_count <= 0) workers_count = 4;
   }
+  if (options.forfeit_repair_threshold > 0.0f) {
+    std::cout << "Forfeit repair ON (threshold "
+              << options.forfeit_repair_threshold
+              << "): games ending in a time forfeit or abandonment whose "
+                 "final evaluation contradicts the awarded result will be "
+                 "relabelled. Pass -forfeit-repair 0 to disable."
+              << std::endl;
+  } else {
+    std::cout << "Forfeit repair OFF: awarded results are written as-is."
+              << std::endl;
+  }
   std::cout << "Processing " << pgn_file_name << " using " << workers_count
             << " worker thread(s)..." << std::endl;
 
@@ -247,6 +258,24 @@ int main(int argc, char *argv[]) {
       }
       std::cout << "WDL spread (pgn-eval-mode) set to: " << options.wdl_spread
                 << std::endl;
+    } else if (0 == static_cast<std::string>("-forfeit-repair")
+                        .compare(argv[idx])) {
+      if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
+        std::cerr << "Error: -forfeit-repair requires a float argument "
+                     "(0 disables it; default 0.7)."
+                  << std::endl;
+        return 1;
+      }
+      const char* repair_arg = argv[++idx];
+      options.forfeit_repair_threshold = std::atof(repair_arg);
+      // 0 is meaningful now that the default is on: it is how the feature
+      // is turned off.
+      if (options.forfeit_repair_threshold < 0.0f ||
+          options.forfeit_repair_threshold > 1.0f) {
+        std::cerr << "Error: -forfeit-repair must be in [0, 1], got '"
+                  << repair_arg << "'." << std::endl;
+        return 1;
+      }
     } else if (0 == static_cast<std::string>("-policy-static-eval")
                         .compare(argv[idx])) {
       options.policy_static_eval = true;

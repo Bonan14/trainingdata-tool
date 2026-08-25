@@ -17,7 +17,7 @@ Two things shape the structure:
 A hang is no longer destructive: whatever was written before it stays valid
 and correctly numbered, so the run can simply be resumed.
 """
-import subprocess, sys, time
+import argparse, subprocess, sys, time
 from pathlib import Path
 
 TOOL    = Path(r"C:\Users\Contrad\Documents\Code\repos\lc0-training\training-data-tool\build\trainingdata-tool.exe")
@@ -68,6 +68,15 @@ def stage(name, cmd, limit):
         return False
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--skip-rescore", action="store_true",
+        help="Skip Syzygy rescoring (stage 2). Fishtest games are adjudicated "
+             "around +4 pawns, long before any position is tablebase-reachable, "
+             "so the rescorer is a measured no-op on this data -- ~0.02%% of "
+             "labels changed across a 2M-game corpus. Rescoring still matters "
+             "after finish_games.py plays adjudicated games out to a real end.")
+    args = ap.parse_args()
+
     log("=" * 64)
     log("overnight pipeline starting")
     ROOT.mkdir(parents=True, exist_ok=True)
@@ -93,9 +102,12 @@ def main():
     if not dirs:
         log("nothing produced -- stopping"); return 1
 
-    stage("STAGE 2 rescore",
-          [sys.executable, str(SCRIPTS / "rescore_all.py"), str(ROOT),
-           "--syzygy", str(SYZYGY), "--replace", "--resume"], 10 * 3600)
+    if args.skip_rescore:
+        log("STAGE 2 rescore: skipped (--skip-rescore)")
+    else:
+        stage("STAGE 2 rescore",
+              [sys.executable, str(SCRIPTS / "rescore_all.py"), str(ROOT),
+               "--syzygy", str(SYZYGY), "--replace", "--resume"], 10 * 3600)
     stage("STAGE 3 pack",
           [sys.executable, str(SCRIPTS / "pack_chunks.py"), str(ROOT),
            "--output-dir", str(TARS), "--resume"], 6 * 3600)

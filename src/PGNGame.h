@@ -75,6 +75,32 @@ struct Options {
   // policy target stays one-hot, which is the historical behaviour. A PGN
   // contains no search, so any value here is reconstructed from the
   // evaluation rather than measured -- see the call site in PGNGame.cpp.
+  // Repair forfeited games instead of trusting the PGN result.
+  //
+  // A Fishtest game can end because an engine crashed or lost on time. The
+  // result is then awarded against that engine whatever the position was,
+  // so the stored label contradicts the stored evaluation -- the net is
+  // told a dead-lost position was a win. Measured on the Fishtest-SEE
+  // corpus, ~0.04% of games carry a decisive result their own final
+  // evaluation does not support.
+  //
+  // When the final position's evaluation clearly contradicts the recorded
+  // result, the evaluation is believed and the result is flipped. "Clearly"
+  // is this threshold, applied to the signed agreement
+  // best_q * result_q on the final ply: both are relative to the same side
+  // to move there, so the product is +1 when the position supports the
+  // result and negative when it contradicts it.
+  //
+  // 0.7 is the suggested value: at the wdl_scale/wdl_spread above that is
+  // already a decisively winning position, not a mere edge. Deliberately
+  // NOT lower -- a forfeit from a balanced position (agreement near 0) is
+  // genuinely unknowable, and guessing a winner there would inject exactly
+  // the kind of wrong label this exists to remove. Those are left alone.
+  //
+  // Defaults ON at 0.7. This corrects data that is actively wrong rather
+  // than merely absent, so it is not something to have to remember to
+  // enable; pass -forfeit-repair 0 to restore the historical behaviour.
+  float forfeit_repair_threshold = 0.7f;
   int visit_budget = 0;
   // Divide the share the played move did not take among the other legal moves
   // using a temperature-scaled softmax over relative static evaluations with
@@ -129,6 +155,11 @@ struct Options {
 
 struct PGNGame {
   char result[PGN_STRING_SIZE];
+  // Why the game ended, straight from the PGN tag. Fishtest writes
+  // "adjudication", "normal", "time forfeit" or "abandoned"; the last two
+  // mean the result was awarded against an engine that crashed or ran out
+  // of clock, so the label describes the engine rather than the position.
+  char termination[PGN_STRING_SIZE];
   char fen[PGN_STRING_SIZE];
   std::vector<PGNMoveInfo> moves;
 
