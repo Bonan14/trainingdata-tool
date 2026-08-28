@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 // Single source of truth for turning an engine's scalar centipawn score
 // into lc0's (Q, D) pair. Both evaluation paths use this so they can never
@@ -39,11 +40,129 @@ namespace wdl {
 // being converted -- see Options::wdl_scale in PGNGame.h. `scale` lands
 // near 1.0 as the model implies; `spread` is lc0's scale_reference and
 // follows from the draw rate.
+// The spread schedule: constant below `join`, centipawn-derived above it.
+//
+// A single constant spread cannot serve both ends of the eval range. Narrow
+// values model the draw plateau near equality but make lc0 abandon its own
+// WDL_mu score type in won positions -- it switches to
+// 45*tan(1.56728071628*wl), which diverges as wl -> 1 and reports a +4
+// position as +8.56. Wide values keep lc0 on the WDL_mu path but claim a
+// level position is barely drawish. Measured crossovers: spread 0.85 breaks
+// at eval 3.04, 1.2 at 4.50, 1.4 at 5.43.
+//
+// Above `join` the spread is therefore not chosen at all -- it is pinned by
+// requiring lc0's OTHER score type to agree as well:
+//
+//     W - L  ==  atan(100*eval/90) / 1.5637541897
+//
+// i.e. the centipawn rendering of the target reproduces the Stockfish eval
+// that produced it. Because mu = (a-b)/(a+b) = eval holds for ANY spread
+// (the spread cancels), pinning W-L this way costs nothing and buys exact
+// agreement from both score types plus a monotonically falling D.
+//
+// Below `join` that equation has no solution: mu = 1 forces W = 0.5 exactly,
+// while the centipawn convention puts wl = 0.536 at 100cp, and W >= W-L
+// makes the two irreconcilable. The constraint also degenerates as eval -> 1
+// (the solved spread collapses toward 0, turning the target into a step
+// function), so the join must sit where the schedule is still sensible
+// rather than at its mathematical limit. Below it the spread is held at its
+// join value -- continuous, and the only free choice in the whole curve.
+//
+// join 1.5 gives D = 0.641 at equality; join 2.0 gives 0.526. Reference-net
+// measurements put the true figure between 0.68 and 0.88, so 1.5 is the
+// closer of the two.
+namespace detail {
+
+inline double WdlLogistic(double x) {
+  if (x >= 0.0) return x < 700.0 ? 1.0 / (1.0 + std::exp(-x)) : 1.0;
+  return x > -700.0 ? std::exp(x) / (1.0 + std::exp(x)) : 0.0;
+}
+
+// W - L for a given eval and spread.
+inline double WdlQOf(double ev, double s) {
+  return WdlLogistic((ev - 1.0) / s) - WdlLogistic((-ev - 1.0) / s);
+}
+
+// The W-L that renders back as exactly `ev` under lc0's centipawn score type.
+inline double WdlQTarget(double ev) {
+  return std::atan(ev * 100.0 / 90.0) / 1.5637541897;
+}
+
+// Solve WdlQOf(ev, s) == WdlQTarget(ev). For ev > 1 the left side falls
+// monotonically from 1 to 0 as s goes 0 -> inf, so the root is unique and
+// plain bisection is enough.
+inline double SolveSpread(double ev) {
+  const double tgt = WdlQTarget(ev);
+  double lo = 1e-3, hi = 60.0;
+  for (int i = 0; i < 100; ++i) {
+    const double mid = 0.5 * (lo + hi);
+    if (WdlQOf(ev, mid) > tgt) lo = mid; else hi = mid;
+  }
+  return 0.5 * (lo + hi);
+}
+
+// Bisection is far too slow to run per position, so the schedule is
+// tabulated once at 0.01-pawn resolution and interpolated. Evals in real
+// Fishtest PGNs top out around 84 pawns, so 128 is ample headroom; beyond
+// the table the last entry is reused.
+constexpr double kSpreadStep = 0.01;
+constexpr int kSpreadMaxPawns = 128;
+
+inline const std::vector<double>& SpreadTable() {
+  static const std::vector<double> table = [] {
+    std::vector<double> t(
+        static_cast<size_t>(kSpreadMaxPawns / kSpreadStep) + 2, 0.0);
+    for (size_t i = 0; i < t.size(); ++i) {
+      t[i] = SolveSpread(static_cast<double>(i) * kSpreadStep);
+    }
+    return t;
+  }();
+  return table;
+}
+
+}  // namespace detail
+
+// Spread to use for a position whose eval is `score_pawns`, given the join.
+// join <= 0 means "no schedule": the caller's constant spread is used.
+inline float SpreadForEval(float score_pawns, float join, float spread) {
+  if (!(join > 0.0f)) return spread;
+  const double ev = std::fabs(static_cast<double>(score_pawns));
+  const double use = ev < join ? join : ev;
+  const auto& t = detail::SpreadTable();
+  const double pos = use / detail::kSpreadStep;
+  const size_t i = static_cast<size_t>(pos);
+  if (i + 1 >= t.size()) return static_cast<float>(t.back());
+  const double f = pos - static_cast<double>(i);
+  return static_cast<float>(t[i] * (1.0 - f) + t[i + 1] * f);
+}
+
+// max_wl caps W and L, leaving the remainder as D.
+//
+// The logistic saturates: once (mu - 1)/spread passes about 17 the float
+// result is EXACTLY 1.0, and the value target then asserts the game is
+// already decided in a position that is merely winning. Capping at, say,
+// 0.995 leaves a 0.005 residual that says "winning, not over".
+//
+// This is deliberately separate from spread. Widening spread also keeps W
+// off the rail, but it does so by flattening the entire curve -- at spread
+// 0.85 a won +1.5 position reports W = 0.69 -- so it pays for the tail
+// everywhere else. A cap changes only the positions that were saturating.
+// Default 1.0f, i.e. no cap, so existing callers are unaffected.
 inline void ScoreToWDL(float score_pawns, float scale, float spread,
-                       float& q, float& d) {
+                       float& q, float& d, float max_wl = 1.0f,
+                       float join = 0.0f) {
   const float mu = scale * score_pawns;
-  const float w = 1.0f / (1.0f + std::exp(-(mu - 1.0f) / spread));
-  const float l = 1.0f / (1.0f + std::exp(-(-mu - 1.0f) / spread));
+  // With the schedule on, `spread` is only the low-branch value and the
+  // effective spread comes from SpreadForEval. mu is unaffected either way:
+  // the spread cancels out of (a-b)/(a+b), which is why it can vary per
+  // position without breaking the round-trip.
+  const float s_eff = SpreadForEval(score_pawns, join, spread);
+  float w = 1.0f / (1.0f + std::exp(-(mu - 1.0f) / s_eff));
+  float l = 1.0f / (1.0f + std::exp(-(-mu - 1.0f) / s_eff));
+  if (max_wl < 1.0f) {
+    w = (std::min)(w, max_wl);
+    l = (std::min)(l, max_wl);
+  }
   q = w - l;
   // W and L already sum to <= 1 by construction, so D needs no clamping
   // against |Q| the way it would if Q came from an unrelated formula.

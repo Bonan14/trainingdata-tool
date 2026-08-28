@@ -25,6 +25,7 @@ Usage:
     py scripts/pack_chunks.py CHUNK_ROOT --output-dir ARCHIVES [--group N]
 """
 import argparse
+import concurrent.futures
 import os
 import sys
 import tarfile
@@ -32,13 +33,24 @@ import time
 from pathlib import Path
 
 
+def is_chunk(name):
+    """A training chunk, not some other gzip that happens to sit nearby.
+
+    `.pgn.gz` is the trap: a corpus directory keeps its source PGNs next to
+    the converted output, and both end in .gz. Packing those produces an
+    archive that looks like chunks, is hundreds of MB of PGN text, and only
+    reveals itself when the loader finds no usable data in it.
+    """
+    return name.endswith(".gz") and not name.endswith(".pgn.gz")
+
+
 def chunk_dirs(root):
-    """Immediate subdirectories holding at least one .gz."""
+    """Immediate subdirectories holding at least one training chunk."""
     out = []
     for entry in sorted(os.scandir(root), key=lambda e: e.name):
         if not entry.is_dir():
             continue
-        if any(f.endswith(".gz") for f in os.listdir(entry.path)):
+        if any(is_chunk(f) for f in os.listdir(entry.path)):
             out.append(Path(entry.path))
     return out
 
@@ -52,7 +64,7 @@ def pack(dirs, out_path, compress, verify):
     with tarfile.open(tmp_path, mode) as tar:
         for d in dirs:
             for name in sorted(os.listdir(d)):
-                if not name.endswith(".gz"):
+                if not is_chunk(name):
                     continue
                 tar.add(os.path.join(d, name), arcname=f"{d.name}/{name}")
                 written += 1
@@ -72,6 +84,13 @@ def pack(dirs, out_path, compress, verify):
     return written
 
 
+def _pack_one(job):
+    """Module-level so ProcessPoolExecutor can pickle it."""
+    group, out_path, compress, verify = job
+    written = pack(group, out_path, compress, verify)
+    return out_path, written
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("chunk_root", help="Directory containing sup*-N/ folders")
@@ -88,6 +107,13 @@ def main():
     ap.add_argument("--resume", action="store_true",
                     help="Skip archives that already exist")
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--workers", type=int, default=1,
+                    help="Archives to build in parallel. Each archive is "
+                         "independent, so this scales until the disk "
+                         "saturates -- past that it only adds seek "
+                         "contention. Processes, not threads: tarfile does "
+                         "enough Python-level work per member that the GIL "
+                         "would cap thread scaling")
     args = ap.parse_args()
 
     root = Path(args.chunk_root)
@@ -110,21 +136,38 @@ def main():
 
     t0 = time.time()
     total = skipped = 0
-    for i, group in enumerate(groups, 1):
-        name = group[0].name if len(group) == 1 else \
-            f"{group[0].name}_to_{group[-1].name}"
+
+    jobs = []
+    for group in groups:
+        name = group[0].name if len(group) == 1 else             f"{group[0].name}_to_{group[-1].name}"
         out_path = out_dir / (name + ext)
         if args.resume and out_path.is_file():
             skipped += 1
             continue
-        written = pack(group, out_path, args.compress, not args.no_verify)
-        total += written
-        size = out_path.stat().st_size / 1024 ** 2
-        print(f"[{i}/{len(groups)}] {out_path.name}: {written} chunks, "
-              f"{size:.1f} MB", flush=True)
+        jobs.append((group, out_path, args.compress, not args.no_verify))
+
+    if args.workers > 1 and len(jobs) > 1:
+        print(f"packing with {args.workers} worker process(es)", flush=True)
+        with concurrent.futures.ProcessPoolExecutor(
+                max_workers=args.workers) as ex:
+            futs = {ex.submit(_pack_one, j): j for j in jobs}
+            done = 0
+            for fut in concurrent.futures.as_completed(futs):
+                out_path, written = fut.result()
+                total += written; done += 1
+                size = out_path.stat().st_size / 1024 ** 2
+                print(f"[{done}/{len(jobs)}] {out_path.name}: {written} "
+                      f"chunks, {size:.1f} MB", flush=True)
+    else:
+        for i, j in enumerate(jobs, 1):
+            out_path, written = _pack_one(j)
+            total += written
+            size = out_path.stat().st_size / 1024 ** 2
+            print(f"[{i}/{len(jobs)}] {out_path.name}: {written} chunks, "
+                  f"{size:.1f} MB", flush=True)
 
     el = time.time() - t0
-    print(f"Packed {total} chunks into {len(groups)-skipped} archive(s) "
+    print(f"Packed {total} chunks into {len(jobs)} archive(s) "
           f"in {el/60:.1f}m" + (f" ({skipped} skipped)" if skipped else ""),
           flush=True)
     print("Sources were not modified. To use for training, extract first:",

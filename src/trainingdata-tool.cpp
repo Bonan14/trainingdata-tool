@@ -108,6 +108,10 @@ void convert_games(const std::string &pgn_file_name, Options options,
     std::cout << "Forfeit repair OFF: awarded results are written as-is."
               << std::endl;
   }
+  if (options.min_plies > 0) {
+    std::cout << "Minimum game length: " << options.min_plies
+              << " plies; shorter games are skipped." << std::endl;
+  }
   std::cout << "Processing " << pgn_file_name << " using " << workers_count
             << " worker thread(s)..." << std::endl;
 
@@ -117,6 +121,7 @@ void convert_games(const std::string &pgn_file_name, Options options,
 
   BoundedQueue<PGNGame> queue(256);
   std::atomic<int64_t> games_processed{0};
+  std::atomic<int64_t> games_skipped_short{0};
 
   std::vector<std::thread> workers;
   workers.reserve(workers_count);
@@ -124,6 +129,12 @@ void convert_games(const std::string &pgn_file_name, Options options,
     workers.emplace_back([&]() {
       PGNGame game;
       while (queue.Pop(game)) {
+        // Too short to be a real game -- see Options::min_plies.
+        if (options.min_plies > 0 &&
+            static_cast<int>(game.moves.size()) < options.min_plies) {
+          ++games_skipped_short;
+          continue;
+        }
         auto chunks = game.getChunks(options, evaluator, sf_depth);
         if (!chunks.empty()) {
           writer.EnqueueChunks(chunks);
@@ -156,6 +167,11 @@ void convert_games(const std::string &pgn_file_name, Options options,
             << (writer.FilesWritten() - files_before)
             << " chunk files created, " << writer.FilesWritten()
             << " total so far)." << std::endl;
+  if (games_skipped_short.load() > 0) {
+    std::cout << "Skipped " << games_skipped_short.load()
+              << " game(s) shorter than " << options.min_plies << " plies."
+              << std::endl;
+  }
   pgn_close(pgn);
 }
 
@@ -409,6 +425,53 @@ int main(int argc, char *argv[]) {
       max_games_to_convert = std::atoi(argv[idx + 1]);
       std::cout << "Max games to convert set to: " << max_games_to_convert
                 << std::endl;
+    } else if (0 == static_cast<std::string>("-wdl-join")
+                        .compare(argv[idx])) {
+      if (idx + 1 >= argc) {
+        std::cerr << "Error: -wdl-join requires a float argument." << std::endl;
+        return 1;
+      }
+      options.wdl_join = static_cast<float>(std::atof(argv[idx + 1]));
+      if (options.wdl_join < 0.0f || options.wdl_join > 10.0f) {
+        std::cerr << "Error: -wdl-join must be in [0, 10], got '"
+                  << argv[idx + 1] << "'." << std::endl;
+        return 1;
+      }
+      if (options.wdl_join == 0.0f) {
+        std::cout << "WDL spread schedule OFF: constant wdl_spread."
+                  << std::endl;
+      } else {
+        std::cout << "WDL spread schedule join set to: " << options.wdl_join
+                  << " pawns" << std::endl;
+      }
+    } else if (0 == static_cast<std::string>("-wdl-max")
+                        .compare(argv[idx])) {
+      if (idx + 1 >= argc) {
+        std::cerr << "Error: -wdl-max requires a float argument." << std::endl;
+        return 1;
+      }
+      options.wdl_max = static_cast<float>(std::atof(argv[idx + 1]));
+      if (options.wdl_max <= 0.5f || options.wdl_max > 1.0f) {
+        std::cerr << "Error: -wdl-max must be in (0.5, 1], got '"
+                  << argv[idx + 1] << "'." << std::endl;
+        return 1;
+      }
+      std::cout << "WDL target cap set to: " << options.wdl_max << std::endl;
+    } else if (0 == static_cast<std::string>("-min-plies")
+                        .compare(argv[idx])) {
+      if (idx + 1 >= argc) {
+        std::cerr << "Error: -min-plies requires an integer argument."
+                  << std::endl;
+        return 1;
+      }
+      options.min_plies = std::atoi(argv[idx + 1]);
+      if (options.min_plies < 0) {
+        std::cerr << "Error: -min-plies must be >= 0, got '"
+                  << argv[idx + 1] << "'." << std::endl;
+        return 1;
+      }
+      std::cout << "Minimum game length set to: " << options.min_plies
+                << " plies" << std::endl;
     } else if (0 == static_cast<std::string>("-chunks-per-file")
                         .compare(argv[idx])) {
       chunks_per_file = std::atoi(argv[idx + 1]);
@@ -508,6 +571,9 @@ int main(int argc, char *argv[]) {
           arg == "-chunks-per-dir" || arg == "--chunks-per-dir" ||
           arg == "-max-games-to-convert" || arg == "--max-games-to-convert" ||
           arg == "-chunks-per-file" || arg == "--chunks-per-file" ||
+          arg == "-min-plies" || arg == "--min-plies" ||
+          arg == "-wdl-max" || arg == "--wdl-max" ||
+          arg == "-wdl-join" || arg == "--wdl-join" ||
           arg == "-dedup-uniq-buffersize" || arg == "-dedup-q-ratio" ||
           arg == "-threads" || arg == "--threads" ||
           arg == "-name" || arg == "--name" ||

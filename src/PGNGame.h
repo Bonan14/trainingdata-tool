@@ -64,6 +64,24 @@ struct Options {
   // these change; scripts/measure_pgn_wdl.py fits both.
   float wdl_scale = 1.13f;
   float wdl_spread = 0.21f;
+  // Caps W and L in the value target so a won-but-unfinished position never
+  // gets an exactly-1.0 label. See wdl::ScoreToWDL. 1.0 = no cap.
+  //
+  // Use this, not a wide wdl_spread, to leave that residual: spread flattens
+  // the whole curve (at 0.85 a won +1.5 position reports W = 0.69 and the
+  // fit's RMSE goes 0.007 -> 0.174), while the cap touches only the
+  // positions that were saturating in the first place.
+  float wdl_max = 1.0f;
+  // Eval (in pawns) at which the spread schedule switches from constant to
+  // centipawn-derived. See wdl::SpreadForEval. 0 disables the schedule and
+  // falls back to a constant wdl_spread.
+  //
+  // At 1.5 the curve keeps lc0 on its WDL_mu score path at EVERY eval from 0
+  // to 30 -- no constant spread manages that -- with mu exact throughout, D
+  // falling monotonically 0.641 -> 0.297 -> 0.121 -> 0.027 -> 0.002, and W
+  // peaking at 0.991 rather than saturating. wdl_max is consequently
+  // redundant while this is on.
+  float wdl_join = 1.5f;
   // Halfmove clock at which static evaluation starts blending its (Q, D)
   // toward a certain draw, reaching a full draw at the 100-ply limit.
   // Static mode only: a real engine's score already accounts for the rule,
@@ -101,6 +119,28 @@ struct Options {
   // than merely absent, so it is not something to have to remember to
   // enable; pass -forfeit-repair 0 to restore the historical behaviour.
   float forfeit_repair_threshold = 0.7f;
+  // Drop games shorter than this many plies instead of converting them.
+  //
+  // Fishtest occasionally emits 1-3 ply games when a worker crashes at the
+  // start of a match: the opening book position is fine and the eval is
+  // near level, but a decisive result gets awarded anyway, so every
+  // position in them is mislabelled. Under a count-mode sampler they are
+  // worse than useless, because a 2-ply game still contributes its full
+  // position_count -- the same one or two positions repeated dozens of
+  // times. The previous corpus had 37 of these and they had to be found
+  // and stripped afterwards with a separate script; this makes it a
+  // conversion-time decision instead.
+  //
+  // Defaults to 10 plies (5 full moves). Nothing Fishtest produces that
+  // short is trustworthy: with cutechess resign adjudication needing
+  // several consecutive losing scores before it fires, a game ending
+  // inside 10 plies is nearly always a crashed or abandoned worker rather
+  // than a real collapse. A genuine instant loss out of an imbalanced UHO
+  // book position is possible, so this does discard a small number of real
+  // games -- that is the intended trade, since the mislabelled ones are
+  // actively harmful and the real ones are merely a handful. Pass
+  // -min-plies 0 to convert everything.
+  int min_plies = 10;
   int visit_budget = 0;
   // Divide the share the played move did not take among the other legal moves
   // using a temperature-scaled softmax over relative static evaluations with

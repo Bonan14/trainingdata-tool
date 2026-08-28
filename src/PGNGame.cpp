@@ -109,10 +109,10 @@ void WDLRescale(float& v, float& d, float ratio, float diff, float sign,
 // converted (scripts/measure_pgn_wdl.py); see Options::wdl_scale in
 // PGNGame.h.
 void PawnScoreToWDL(float score_pawns, float scale, float spread, float& q,
-                    float& d) {
+                    float& d, float max_wl, float join) {
   // Shared with StockfishEvaluator's fallback path (WdlConversion.h) so a
   // given score maps to the same (Q, D) in both modes.
-  wdl::ScoreToWDL(score_pawns, scale, spread, q, d);
+  wdl::ScoreToWDL(score_pawns, scale, spread, q, d, max_wl, join);
 
   // Apply lc0's real contempt/draw-rate rescale on top -- but only when it
   // would actually do something. At lc0's neutral defaults it computes to
@@ -404,7 +404,8 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
         // fall back to the same reconstruction -pgn-eval-mode uses, so
         // both paths agree on what a given score means.
         wdl::ScoreToWDL(sf_result.score_cp / 100.0f, options.wdl_scale,
-                        options.wdl_spread, Q, D);
+                        options.wdl_spread, Q, D, options.wdl_max,
+                        options.wdl_join);
       }
       visits = sf_result.nodes;
       sf_best_move_str = sf_result.best_move;
@@ -419,7 +420,8 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
       float pgn_score;
       if (pgn_move.comment[0] &&
           extract_pgn_eval_comment_score(pgn_move.comment, pgn_score)) {
-        PawnScoreToWDL(pgn_score, options.wdl_scale, options.wdl_spread, Q, D);
+        PawnScoreToWDL(pgn_score, options.wdl_scale, options.wdl_spread, Q, D,
+                       options.wdl_max, options.wdl_join);
       } else {
         // Without a parsed eval, the position would be written with a fake
         // Q of 0.0 indistinguishable from an equal evaluation. Abort this
