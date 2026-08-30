@@ -93,7 +93,7 @@ float StaticEvaluator::cpToWinProbability(int cp) {
   // Delegates so all three evaluation modes agree on what a score means.
   // The old ad-hoc sigmoid (2/(1+exp(-0.004*cp)) - 1) was a third, unfitted
   // curve; see WdlConversion.h.
-  return wdl::CentipawnToQ(cp, kDefaultWdlScale, kDefaultWdlSpread);
+  return wdl::CentipawnToQ(cp, kDefaultWdlScale, kDefaultWdlJoin);
 }
 
 int StaticEvaluator::rule50PlyAfter(board_t* board, int move) {
@@ -108,10 +108,10 @@ int StaticEvaluator::rule50PlyAfter(board_t* board, int move) {
 }
 
 void StaticEvaluator::evaluateWDL(board_t* board, int played_move,
-                                  float wdl_scale, float wdl_spread,
+                                  float wdl_scale, float wdl_join,
                                   int r50_damp_start, float& q, float& d) {
   const int cp = evaluate(board);
-  wdl::ScoreToWDL(cp / 100.0f, wdl_scale, wdl_spread, q, d);
+  wdl::ScoreToWDL(cp / 100.0f, wdl_scale, q, d, wdl_join);
   // Penalise by the clock the played move *leaves behind*, not the one it
   // inherited. A capture or pawn push zeroes the counter, so it is scored at
   // full value however long the shuffling before it ran -- which is the

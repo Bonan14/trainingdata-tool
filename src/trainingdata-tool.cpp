@@ -258,22 +258,6 @@ int main(int argc, char *argv[]) {
       }
       std::cout << "WDL scale (pgn-eval-mode) set to: " << options.wdl_scale
                 << std::endl;
-    } else if (0 ==
-               static_cast<std::string>("-wdl-spread").compare(argv[idx])) {
-      if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
-        std::cerr << "Error: -wdl-spread requires a positive float argument."
-                  << std::endl;
-        return 1;
-      }
-      const char* spread_arg = argv[++idx];
-      options.wdl_spread = std::atof(spread_arg);
-      if (options.wdl_spread <= 0.0f) {
-        std::cerr << "Error: -wdl-spread must be a positive number, got '"
-                  << spread_arg << "'." << std::endl;
-        return 1;
-      }
-      std::cout << "WDL spread (pgn-eval-mode) set to: " << options.wdl_spread
-                << std::endl;
     } else if (0 == static_cast<std::string>("-forfeit-repair")
                         .compare(argv[idx])) {
       if (idx + 1 >= static_cast<size_t>(argc) || argv[idx + 1][0] == '-') {
@@ -425,6 +409,21 @@ int main(int argc, char *argv[]) {
       max_games_to_convert = std::atoi(argv[idx + 1]);
       std::cout << "Max games to convert set to: " << max_games_to_convert
                 << std::endl;
+    } else if (0 == static_cast<std::string>("-wdl-spread").compare(argv[idx]) ||
+               0 == static_cast<std::string>("--wdl-spread").compare(argv[idx]) ||
+               0 == static_cast<std::string>("-wdl-max").compare(argv[idx]) ||
+               0 == static_cast<std::string>("--wdl-max").compare(argv[idx])) {
+      // Removed along with the constant-spread model. Fail loudly rather than
+      // ignoring them: silently dropping a flag that used to reshape every
+      // value target in the corpus is exactly the kind of quiet wrongness
+      // this tool has been bitten by before.
+      std::cerr << "Error: " << argv[idx] << " has been removed. The spread "
+                   "is now produced by the -wdl-join schedule rather than "
+                   "being a constant, and the target cap is redundant "
+                   "because the schedule no longer saturates W. Drop the "
+                   "flag; use -wdl-join to move draw mass at equality."
+                << std::endl;
+      return 1;
     } else if (0 == static_cast<std::string>("-wdl-join")
                         .compare(argv[idx])) {
       if (idx + 1 >= argc) {
@@ -432,31 +431,15 @@ int main(int argc, char *argv[]) {
         return 1;
       }
       options.wdl_join = static_cast<float>(std::atof(argv[idx + 1]));
-      if (options.wdl_join < 0.0f || options.wdl_join > 10.0f) {
-        std::cerr << "Error: -wdl-join must be in [0, 10], got '"
+      // Strictly positive: the spread schedule is unconditional, so there is
+      // no longer a 0 setting that falls back to a constant spread.
+      if (options.wdl_join <= 0.0f || options.wdl_join > 10.0f) {
+        std::cerr << "Error: -wdl-join must be in (0, 10], got '"
                   << argv[idx + 1] << "'." << std::endl;
         return 1;
       }
-      if (options.wdl_join == 0.0f) {
-        std::cout << "WDL spread schedule OFF: constant wdl_spread."
-                  << std::endl;
-      } else {
-        std::cout << "WDL spread schedule join set to: " << options.wdl_join
-                  << " pawns" << std::endl;
-      }
-    } else if (0 == static_cast<std::string>("-wdl-max")
-                        .compare(argv[idx])) {
-      if (idx + 1 >= argc) {
-        std::cerr << "Error: -wdl-max requires a float argument." << std::endl;
-        return 1;
-      }
-      options.wdl_max = static_cast<float>(std::atof(argv[idx + 1]));
-      if (options.wdl_max <= 0.5f || options.wdl_max > 1.0f) {
-        std::cerr << "Error: -wdl-max must be in (0.5, 1], got '"
-                  << argv[idx + 1] << "'." << std::endl;
-        return 1;
-      }
-      std::cout << "WDL target cap set to: " << options.wdl_max << std::endl;
+      std::cout << "WDL spread schedule join set to: " << options.wdl_join
+                << " pawns" << std::endl;
     } else if (0 == static_cast<std::string>("-min-plies")
                         .compare(argv[idx])) {
       if (idx + 1 >= argc) {
@@ -541,6 +524,13 @@ int main(int argc, char *argv[]) {
             << " (e.g. " << output_prefix << "0/, " << output_prefix << "1/)"
             << std::endl;
 
+  // Report the effective WDL model on EVERY run, not only when the flags were
+  // passed. A wrong scale is invisible in the output chunks, which is exactly
+  // why the old 1.13 default went unnoticed for so long.
+  std::cout << "WDL model: scale " << options.wdl_scale
+            << " (pinned at 1.0 by lc0's decode convention), spread schedule "
+            << "join " << options.wdl_join << " pawns" << std::endl;
+
   // Initialize Stockfish if requested
   std::unique_ptr<StockfishEvaluator> evaluator;
   if (options.stockfish_mode) {
@@ -564,7 +554,6 @@ int main(int argc, char *argv[]) {
       // Skip the value for options that take a parameter
       if (arg == "-stockfish" || arg == "-sf-depth" || arg == "-sf-hash" ||
           arg == "-wdl-scale" || arg == "--wdl-scale" ||
-          arg == "-wdl-spread" || arg == "--wdl-spread" ||
           arg == "-r50-damp-start" || arg == "--r50-damp-start" ||
           arg == "-visit-budget" || arg == "--visit-budget" ||
           arg == "-files-per-dir" || arg == "--files-per-dir" ||
@@ -572,7 +561,6 @@ int main(int argc, char *argv[]) {
           arg == "-max-games-to-convert" || arg == "--max-games-to-convert" ||
           arg == "-chunks-per-file" || arg == "--chunks-per-file" ||
           arg == "-min-plies" || arg == "--min-plies" ||
-          arg == "-wdl-max" || arg == "--wdl-max" ||
           arg == "-wdl-join" || arg == "--wdl-join" ||
           arg == "-dedup-uniq-buffersize" || arg == "-dedup-q-ratio" ||
           arg == "-threads" || arg == "--threads" ||

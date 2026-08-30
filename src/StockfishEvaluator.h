@@ -52,7 +52,8 @@ class StockfishEvaluator {
   Result evaluate(int depth);
 
   // Convert centipawn score to win probability Q value [-1, 1].
-  // Delegates to wdl::CentipawnToQ so this matches -pgn-eval-mode exactly;
+  // Delegates to wdl::CentipawnToQ so this matches -pgn-eval-mode exactly,
+  // schedule included;
   // only a fallback for engines/builds that do not report a WDL.
   static float cpToWinProbability(int centipawns);
 

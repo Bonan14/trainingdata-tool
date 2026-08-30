@@ -10,10 +10,13 @@
 
 class StaticEvaluator {
 public:
-  // Defaults shared with Options::wdl_scale / wdl_spread (PGNGame.h) so a
-  // caller that does not thread them through still gets the fitted model.
-  static constexpr float kDefaultWdlScale = 1.13f;
-  static constexpr float kDefaultWdlSpread = 0.21f;
+  // Defaults shared with Options::wdl_scale / wdl_join (PGNGame.h) so a
+  // caller that does not thread them through still gets the same model.
+  // Scale is pinned at 1.0 by lc0's decode convention -- see the comment on
+  // Options::wdl_scale. The join is the schedule's, so this path produces
+  // the same curve as -pgn-eval-mode.
+  static constexpr float kDefaultWdlScale = 1.0f;
+  static constexpr float kDefaultWdlJoin = wdl::kDefaultJoin;
   // Halfmove clock below which the 50-move rule is ignored entirely.
   static constexpr int kDefaultR50DampStart = 40;
 
@@ -34,7 +37,7 @@ public:
   // played so a move that resets the clock is not penalised for the shuffling
   // that preceded it.
   static void evaluateWDL(board_t* board, int played_move, float wdl_scale,
-                          float wdl_spread, int r50_damp_start, float& q,
+                          float wdl_join, int r50_damp_start, float& q,
                           float& d);
 
   // Convert centipawns to win probability in [-1, 1] range

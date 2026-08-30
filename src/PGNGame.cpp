@@ -105,14 +105,14 @@ void WDLRescale(float& v, float& d, float ratio, float diff, float sign,
 // consistent distribution -- Q and D are not computed from separate
 // sources and so cannot disagree.
 //
-// Both parameters are fitted against the real outcomes of the games being
-// converted (scripts/measure_pgn_wdl.py); see Options::wdl_scale in
-// PGNGame.h.
-void PawnScoreToWDL(float score_pawns, float scale, float spread, float& q,
-                    float& d, float max_wl, float join) {
+// Nothing here is fitted. `scale` is pinned at 1.0 by lc0's decode
+// convention, and the spread is produced by the wdl_join schedule rather
+// than being a parameter at all. See Options::wdl_scale in PGNGame.h.
+void PawnScoreToWDL(float score_pawns, float scale, float& q, float& d,
+                    float join) {
   // Shared with StockfishEvaluator's fallback path (WdlConversion.h) so a
   // given score maps to the same (Q, D) in both modes.
-  wdl::ScoreToWDL(score_pawns, scale, spread, q, d, max_wl, join);
+  wdl::ScoreToWDL(score_pawns, scale, q, d, join);
 
   // Apply lc0's real contempt/draw-rate rescale on top -- but only when it
   // would actually do something. At lc0's neutral defaults it computes to
@@ -123,7 +123,7 @@ void PawnScoreToWDL(float score_pawns, float scale, float spread, float& q,
   // identity case keeps the reconstruction above intact.
   //
   // Note max_reasonable_s is lc0's WDLMaxS (default 1.4) -- a clamp on the
-  // decomposed sharpness, NOT the same quantity as our fitted `spread`.
+  // decomposed sharpness, NOT the same quantity as the schedule's spread.
   // Passing `spread` here was a bug; they are unrelated parameters that
   // happen to both describe "spread".
   static const WDLRescaleParams kRescaleParams = ComputeWDLRescaleParams(
@@ -403,8 +403,7 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
         // No WDL available (older engine, or UCI_ShowWDL unsupported):
         // fall back to the same reconstruction -pgn-eval-mode uses, so
         // both paths agree on what a given score means.
-        wdl::ScoreToWDL(sf_result.score_cp / 100.0f, options.wdl_scale,
-                        options.wdl_spread, Q, D, options.wdl_max,
+        wdl::ScoreToWDL(sf_result.score_cp / 100.0f, options.wdl_scale, Q, D,
                         options.wdl_join);
       }
       visits = sf_result.nodes;
@@ -420,8 +419,7 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
       float pgn_score;
       if (pgn_move.comment[0] &&
           extract_pgn_eval_comment_score(pgn_move.comment, pgn_score)) {
-        PawnScoreToWDL(pgn_score, options.wdl_scale, options.wdl_spread, Q, D,
-                       options.wdl_max, options.wdl_join);
+        PawnScoreToWDL(pgn_score, options.wdl_scale, Q, D, options.wdl_join);
       } else {
         // Without a parsed eval, the position would be written with a fake
         // Q of 0.0 indistinguishable from an equal evaluation. Abort this
@@ -433,7 +431,7 @@ std::vector<lczero::V6TrainingData> PGNGame::getChunks(
     } else {
       // Normal mode: use static evaluation
       StaticEvaluator::evaluateWDL(board, move, options.wdl_scale,
-                                   options.wdl_spread, options.r50_damp_start,
+                                   options.wdl_join, options.r50_damp_start,
                                    Q, D);
       if (options.verbose) {
         std::cout << "Static eval: " << StaticEvaluator::evaluate(board)

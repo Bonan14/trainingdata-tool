@@ -76,8 +76,8 @@ Pass PGN input files and it will output training data in the same format lc0 sel
 | --- | --- |
 | `-v` | Verbose mode - shows detailed progress |
 | `-pgn-eval-mode` | Read the eval already in each move's PGN comment (Fishtest/cutechess-cli's `SCORE/DEPTH TIMEs` format, e.g. `-0.76/18 1.813s`) instead of re-evaluating -- no engine spawned |
-| `-wdl-scale <F>` | Scale for the fitted WDL model in `-pgn-eval-mode` (default: `1.13`, fitted -- see below). Affects both Q and D |
-| `-wdl-spread <F>` | Spread for the fitted WDL model in `-pgn-eval-mode` (default: `0.21`, fitted -- see below). Affects both Q and D |
+| `-wdl-scale <F>` | Scale in the WDL model for `-pgn-eval-mode` (default: `1.0`). Pinned by lc0's decode convention -- not a fitted parameter, see below |
+| `-wdl-join <F>` | Eval at which the spread schedule switches from flat to solved (default: `1.5`). The only real dial; sets draw mass at equality. Must be > 0 |
 | `-visit-budget <N>` | Pseudo visit count written per position (default: `0` / one-hot). When set (e.g. `850`), sets total visits and distributes played move policy share as $0.5 + \|Q\|/2$, spreading remainder over other legal moves |
 | `-policy-static-eval` | Divide the share the played move did not take among the other legal moves by their static evaluation instead of evenly (default: off). Requires `-visit-budget`; see below |
 | `-policy-eval-temp <F>` | Softmax temperature in centipawns for `-policy-static-eval` (default: `20`). Smaller sharpens the spread over alternatives |
@@ -145,9 +145,9 @@ Both paths share `src/WdlConversion.h`, so a given centipawn value maps to the s
 
 ### Why this exists
 
-`-pgn-eval-mode` gives you a bare centipawn value per move, not a `(Q, D)` pair. `-stockfish` mode gets a real draw probability from Stockfish's live `UCI_ShowWDL` output, but a PGN comment has no such thing -- it's one number. So `Q` (win-loss) and `D` (draw probability) both have to be recovered from that single scalar:
+`-pgn-eval-mode` gives you a bare centipawn value per move, not a `(Q, D)` pair. So `Q` (win-loss) and `D` (draw probability) both have to be recovered from that single scalar.
 
-**Both come from one model: lc0's `WDL_mu`, run backwards.** `search.cc` reports `score = 100 * mu` for that score type -- so `mu` is simply the eval in pawns, and no display formula needs inverting. Feed it into the same logistic pair `WDLRescale()` reconstructs with:
+**Both come from one model: lc0's `WDL_mu`, run backwards.** `search.cc` reports `score = 100 * mu` for that score type, so `mu` is simply the eval in pawns. Feed it into the same logistic pair `WDLRescale()` reconstructs with:
 
 ```
 mu = scale · eval
@@ -157,195 +157,165 @@ Q  = W - L                            D = 1 - W - L
 
 `Q` and `D` come out of the same `(W, L)`, so they're a consistent distribution by construction and can't disagree.
 
-> **Do not use lc0's `centipawn` score type here.**
-> `cp = 90·tan(1.5637541897·Q)` is a *display* convention for rendering Q as a centipawn-looking number -- it was never fitted to outcome frequencies. Measured against real results it's badly miscalibrated in both directions: at `+0.37` it claims `Q=+0.25` where the truth is `+0.02`, and at `+2.45` it claims `+0.78` where the truth is `+1.00`. `scripts/measure_pgn_wdl.py` reproduces that comparison.
+The two parameters in that formula are **not** two knobs of the same kind, and this is the single most important thing to understand about them:
 
-**The two parameters are fitted against the real outcomes of the games being converted.** Bucket positions by the eval in their PGN comment, count the actual win/draw/loss frequencies, and fit `W` and `L` to them. Best fit: **`-wdl-scale 1.13`, `-wdl-spread 0.21`** (Root Mean Square Error: RMSE 0.015 on `(W, L)`), and it is stable across sources -- five separate Fishtest files fit to `scale` 1.11-1.27 and `spread` 0.20-0.21.
+- **`scale` is pinned at exactly `1.0`.** It is not fittable and there is nothing to measure.
+- **`spread` is genuinely free** -- so free that it is no longer a constant at all, but a schedule selected by `-wdl-join`.
 
-That `scale` lands near `1.0` is a consistency check, not luck: the model says `mu` *is* the eval, so a large correction would have meant the model was wrong.
+### `-wdl-scale` is pinned at 1.0, not fitted
 
-Measured from one Fishtest file (6000 games), mover's perspective:
+lc0 inverts a value target with `a = log(1/l - 1)`, `b = log(1/w - 1)`, `mu = (a - b)/(a + b)`, and then reports `score = 100 · mu`. So `mu` **is** the eval in pawns, by convention. Setting `scale` to anything other than `1.0` means lc0 reads back `scale · eval` on every position in the corpus.
 
-| eval | W | D | L | Q (real) | Q (model) |
-| --- | --- | --- | --- | --- | --- |
-| −2.46 | 0.000 | 0.002 | 0.998 | −0.998 | −1.000 |
-| −1.19 | 0.001 | 0.159 | 0.840 | −0.839 | −0.836 |
-| −0.65 | 0.004 | 0.782 | 0.214 | −0.210 | −0.217 |
-| ±0.00 | 0.001 | **0.997** | 0.002 | −0.001 | −0.000 |
-| +0.64 | 0.159 | 0.837 | 0.004 | +0.155 | +0.207 |
-| +1.18 | 0.782 | 0.218 | 0.001 | +0.781 | +0.827 |
-| +2.45 | 0.996 | 0.004 | 0.000 | +0.996 | +1.000 |
+Round-trip, encoding a true eval of `3.00`:
 
-Note how sharply real engine chess behaves: draws dominate almost totally until about ±0.75, then it flips decisively. That shape is what the model has to reproduce, and it's why a gentler curve fits so poorly.
+| `-wdl-scale` | lc0 reads back | error |
+| --- | --- | --- |
+| **`1.0`** | **`3.0000`** | **none** |
+| `1.13` | `3.3900` | +13% on every target |
+| `0.77` | `2.3100` | -23% on every target |
 
-#### Why not lc0's `WDLDrawRateReference`?
+Both of those wrong values were once shipped here as defaults, and both came from fitting something that should never have been fitted:
 
-Because that parameter describes the net you are *running* -- the lc0 blog tells you to look it up by running that net from startpos and reading its WDL output. Here we aren't running a net; we're generating training data, and these are Stockfish games with their own opening book, time control and adjudication rules, so a different draw-rate characteristic entirely. Targeting an lc0 net's draw rate would aim at the wrong distribution, and would be circular if that net is the one being trained. Concretely: fitting against lc0 self-play chunks gives `(2.3, 0.45)`, which scores a **Root Mean Square Error (RMSE) of 0.189** against this data versus **0.015** for the values above.
+- **`1.13` was fitted to Fishtest outcomes.** That population is two near-identical Stockfishes with ~86% adjudication, and cutechess adjudicates a draw exactly when the eval sits near zero -- so it reports `D ≈ 1.00` at eval 0, and fitting to it saturates the value target.
+- **`0.77` was fitted to a reference net's reported WDL.** Also unsound, for two independent reasons. Nets disagree with each other far too much to anchor anything: probing a KDA net gave a badly non-monotonic curve, with `W` of 0.564 at eval `+0.75` *falling* to 0.296 at `+1.5` and 0.255 at `+2.5`, then jumping to 0.893 at `+3.0`. And the UCI-reported WDL is not the raw value head anyway -- lc0 applies `WDLRescale` to it in search, so that measurement was of the search output, not the net.
 
-> **Caveat.** ~86% of Fishtest games end by adjudication, and cutechess adjudicates a draw precisely when the eval sits near zero (and a win when it stays high). So this curve is partly shaped by the adjudication rule rather than pure chess. It is still the real label distribution in the data, and it's self-consistent with `result_q`/`result_d`, which come from the same recorded results.
+Each fit was quietly correcting a systematic bias that only existed because the scale was free in the first place. **Leave `-wdl-scale` at `1.0`.** If you find yourself wanting to fit it, the model is telling you something else is wrong.
 
-The result is then passed through the real, ported `WDLRescale()` (from `search.cc`) with the `(ratio, diff)` lc0 derives from its own neutral contempt/draw-rate defaults via `AccurateWDLRescaleParams()` (`params.cc`) -- a no-op at those defaults, but wired up faithfully so adding a contempt or draw-rate option later is a one-line change.
+### `-wdl-join` selects a spread schedule
 
-### The two knobs
+Because `mu = (a - b)/(a + b)` and the spread cancels out of that ratio, **`mu` is exact for any spread whatsoever**. The spread can therefore vary per position at zero cost to the round-trip -- which is what makes a schedule possible, and what makes a single constant unnecessary.
+
+It is also what makes a single constant *insufficient*. lc0's `WDL_mu` branch abandons `mu` and falls back to rendering `45·tan(1.56728·wl)` whenever `|wl| + d >= 0.996` **or** `|centipawn| >= |100·mu|`. The second condition binds first, and the tangent diverges as `wl → 1`. Measured crossovers for a constant spread:
+
+| constant spread | falls back at eval | consequence |
+| --- | --- | --- |
+| `0.85` | `3.04` | reports a `+4` position as `+8.56`, and a `+8` as `+113` |
+| `1.2` | `4.50` | |
+| `1.4` (lc0's `WDLMaxS` clamp) | `5.43` | |
+
+There is no constant that escapes this. Staying on the path needs `Q < atan(100·ev/45)/1.56728`, which at `+8` is `0.9664` -- while a truthful target there needs `0.9965`. A spread wide enough to avoid fallback at `+8` (`>= 1.91`) simultaneously claims a level position is only 24.5% likely to draw. A grid search for a linear `s(ev)` valid out to `+100` returned parameters asserting a `+8` position has a 16% chance of *losing*.
+
+The resolution is a two-branch schedule, `wdl::SpreadForEval`:
+
+- **Above the join**, the spread is not chosen at all -- it is *solved*, per position, so that `W - L == atan(100·eval/90)/1.5637541897`. That is the constraint that lc0's other score type (the centipawn rendering) reproduces the source eval, so both of lc0's score paths agree and neither falls back. This is a derivation, not a fit.
+- **Below the join**, that same equation has no solution: `mu = 1` forces `W = 0.5` exactly, while the centipawn convention puts `wl = 0.536` at 100cp, and `W >= W - L` makes the two irreconcilable. There is no solution anywhere in eval `0.2`--`1.0`, and at eval `0` the constraint degenerates entirely (`Q = 0` gives `mu = 0` for *every* `D`, so draw mass at equality is simply unconstrained). Below the join the spread is therefore held flat at its join value, `0.659`.
+
+Resulting curve at `-wdl-join 1.5`, evaluated straight out of `wdl::ScoreToWDL`:
+
+| eval | W | D | L |
+| --- | --- | --- | --- |
+| `0` | 0.1800 | **0.6401** | 0.1800 |
+| `+3` | 0.8489 | 0.1204 | 0.0307 |
+| `+8` | 0.9532 | 0.0265 | 0.0203 |
+| `+10` | 0.9645 | 0.0181 | 0.0174 |
+| `+30` | 0.9915 | 0.0024 | 0.0062 |
+
+`D` is monotonically non-increasing across the whole range (checked at every 0.01 pawn from 0 to 30), and `W` never saturates -- it reaches `0.9915` at eval 30 and is still only `0.9993` at eval 100 -- so `L` never reaches zero and lc0 stays on its `WDL_mu` path throughout. No constant spread manages that.
+
+The table above is the model itself, reproducible by anyone compiling against `WdlConversion.h`. A conversion run over 207,484 positions produced per-band averages consistent with it, but those are corpus statistics, not the curve.
+
+### The flags
 
 | Flag | Default | Effect |
 | --- | --- | --- |
-| `-wdl-scale <F>` | `1.13` | Moves **where** the draw→decisive transition happens. Higher = transition at a smaller eval = more positions called decided. This is the main knob, and it is *not* phase-aware -- see below. |
-| `-wdl-spread <F>` | `0.21` | Controls **how steep** the transition is, and sets the draw rate at an equal position. |
+| `-wdl-scale <F>` | `1.0` | **Leave it.** Pinned by lc0's decode convention; any other value rescales every target in the corpus. |
+| `-wdl-join <F>` | `1.5` | The one real dial. Sets the eval at which the spread schedule switches from flat to solved -- and thereby the draw mass at equality. Must be > 0. |
 
-Both knobs move `Q` and `D` together, because both come out of the same pair of logistics -- there is no way to sharpen `D` while leaving `Q` alone, and that is the point: the triple stays consistent by construction.
+Those are the only two. **`-wdl-spread` and `-wdl-max` have been removed** along with the constant-spread model: the schedule produces the spread per position, and it no longer saturates `W`, so the cap had nothing left to do. Passing either flag is a hard error rather than a silent no-op -- a dropped flag that used to reshape every value target in the corpus is not something to discover after a conversion run.
 
-Both exist because lc0's logistic anchors its transition at `mu = ±1`. `-wdl-spread` only stretches the curve vertically -- it cannot move where the transition sits. That's why spread alone can't match near-equal and decisive positions simultaneously. `-wdl-scale` supplies the missing degree of freedom.
+The schedule is unconditional; there is no longer a setting that turns it off.
 
-`-wdl-spread` is not arbitrary: it's exactly lc0's `scale_reference`, so it can be *derived* from a draw rate rather than searched --
+All three modes now go through it. `-stockfish`'s fallback for engines that do not report `UCI_ShowWDL`, and static-eval mode, previously used the constant-spread curve while `-pgn-eval-mode` used the schedule, so the three disagreed above the join despite comments claiming otherwise. They now produce the same curve.
+
+Every run prints the model it is actually using:
 
 ```
-spread = 1 / log((1 + r) / (1 - r))        r = draw rate at an equal position
+WDL model: scale 1 (pinned at 1.0 by lc0's decode convention), spread schedule join 1.5 pawns
 ```
 
-which inverts as `D(equal) = 1 - 2·logistic(-1/spread)`. `scripts/measure_pgn_draw_rate.py` reports both.
+That line appears whether or not the flags were passed. A wrong scale is invisible in the output chunks, which is how a `1.13` default survived unnoticed for as long as it did.
+
+The join is really the draw-mass dial at equal material:
+
+| `-wdl-join` | `D` at eval 0 |
+| --- | --- |
+| `1.0` | 1.0000 (degenerate) |
+| `1.5` (default) | 0.6401 |
+| `2.0` | 0.5263 |
+| `2.5` | 0.4564 |
+
+Reference-net measurement put the draw rate at equality between `0.68` and `0.88` across two samples, which is what makes `1.5` the closest of these. The `1.0` row is why the join cannot simply be pushed to its mathematical limit: the curve collapses into a step function that calls every equal position a certain draw.
+
+**Two caveats worth carrying.** The low branch is a modelling choice rather than a derivation, and it covers most of the corpus. And the curve is continuous at the join but kinks in slope there -- C0, not C1. The join must also sit where the schedule is still sensible rather than at its mathematical limit: the solved spread collapses toward 0 as eval approaches 1, turning the target into a step function, so `1.5` rather than `1.01`.
+
+Implementation note: solving per position is far too slow, so `SpreadForEval` tabulates the bisection at 0.01-pawn resolution out to 128 pawns.
 
 ### Recommended values
 
-**Use the defaults unless you have a specific reason not to:**
+**Use the defaults:**
 
 ```bash
 ./build/trainingdata-tool -pgn-eval-mode games-finished.pgn
 ```
 
-`1.13 / 0.21` is what actually matches the outcomes of the games being converted. Anything else is a deliberate distribution shift, not a correction -- you'd be training the value head toward different confidence than the source data supports. That may be exactly what you want, but do it knowingly.
+That is `-wdl-scale 1.0 -wdl-join 1.5`, and it is what the current corpus was built with. The only parameter here worth deliberately changing is the join, and only to move draw mass at equality.
 
-### Making the targets sharper
+**There is nothing to fit.** Earlier versions of this document described measuring `(scale, spread)` against your own PGNs with `scripts/measure_pgn_wdl.py` and feeding the result back in. That workflow is obsolete and was wrong in principle: the scale is pinned by lc0's convention rather than by any data, and the spread is now solved per position rather than searched. The measurement scripts still exist and are still useful for *inspecting* a corpus -- what its draw rate looks like, how its evals are distributed -- but their output is no longer an input to conversion.
 
-**Raise `-wdl-scale`.** `D` collapses at a smaller eval, so advantages look decisively won instead of drawish:
+### Why not lc0's `WDLDrawRateReference`?
 
-Resulting draw probability `D` at a given eval (spread `0.21`):
+Because that parameter describes the net you are *running* -- the lc0 blog tells you to look it up by running that net from startpos and reading its WDL output. Here we aren't running a net; we're generating training data, and these are Stockfish games with their own opening book, time control and adjudication rules, so a different draw-rate characteristic entirely. Targeting an lc0 net's draw rate would aim at the wrong distribution, and would be circular if that net is the one being trained.
 
-| eval | `k=1.13` (default) | `k=1.4` | `k=1.8` | `k=2.8` |
+This objection is now doubly strong: as recorded above, a net's *reported* WDL is post-`WDLRescale` search output rather than its value head, and nets disagree with each other non-monotonically. Anchoring the corpus to whichever net is at hand bakes that net's defects into the data.
+
+### Historical: what the outcome fit actually measured
+
+The measured outcome distribution from one Fishtest file (6000 games, mover's perspective) is still worth reading -- not as a fitting target, but as a picture of what adjudication does to a corpus:
+
+| eval | W | D | L | Q (real) |
 | --- | --- | --- | --- | --- |
-| `0.00` | 0.983 | 0.983 | 0.983 | 0.983 |
-| `0.25` | 0.966 | 0.955 | 0.931 | 0.806 |
-| `0.50` | 0.888 | 0.806 | 0.617 | 0.130 |
-| `0.75` | 0.674 | 0.441 | 0.159 | 0.005 |
-| `1.00` | 0.350 | 0.130 | 0.022 | 0.000 |
-| `1.50` | 0.035 | 0.005 | 0.000 | 0.000 |
-| `2.00` | 0.0025 | 0.0002 | ~0 | ~0 |
+| −2.46 | 0.000 | 0.002 | 0.998 | −0.998 |
+| −1.19 | 0.001 | 0.159 | 0.840 | −0.839 |
+| −0.65 | 0.004 | 0.782 | 0.214 | −0.210 |
+| ±0.00 | 0.001 | **0.997** | 0.002 | −0.001 |
+| +0.64 | 0.159 | 0.837 | 0.004 | +0.155 |
+| +1.18 | 0.782 | 0.218 | 0.001 | +0.781 |
+| +2.45 | 0.996 | 0.004 | 0.000 | +0.996 |
 
-```bash
-# sharper -- decisive by about 0.75
-./build/trainingdata-tool -pgn-eval-mode -wdl-scale 1.4 games-finished.pgn
-```
+`D = 0.997` at equality is not a fact about chess. ~86% of Fishtest games end by adjudication and cutechess adjudicates a draw precisely when the eval sits near zero, so that number is mostly the adjudication rule reporting itself. Fitting a value target to it is how a corpus ends up asserting that every equal position is a certain draw.
 
-#### It is not a game-phase control
+### `-wdl-scale` was never a game-phase control
 
-This is the easiest thing to get wrong about the knob, so it is worth being blunt: **`-wdl-scale` cannot make endgames sharper.** It maps an eval to a distribution and has no idea whether the board holds 32 pieces or 5. The scale sets the eval at which the model calls a position half-won, which is just `1 / scale`:
+Worth keeping on record, since it was the most common thing people tried to do with the knob before it was pinned: **`-wdl-scale` could not make endgames sharper.** It maps an eval to a distribution with no idea whether the board holds 32 pieces or 5, so raising it never reached *down* into decisive endgames -- those are already saturated -- it reached *up* into quieter, and therefore usually earlier, positions. Measured over 780,109 positions from 6,000 Fishtest games:
 
-| scale | half-won at |
-| --- | --- |
-| `1.13` (default) | `0.88` |
-| `1.4` | `0.71` |
-| `1.8` | `0.56` |
-| `2.8` | `0.36` |
-
-Raising it does not reach *down* into decisive endgames -- those are already saturated. It reaches *up* into quieter positions, which in practice means **earlier** ones. Measured over 780,109 positions from 6,000 Fishtest games:
-
-| band | share | what the knob does there |
+| band | share | what raising the scale did there |
 | --- | --- | --- |
 | \|eval\| >= 1.5 | 26.7% | nothing -- already `D<0.04` at every setting |
-| 0.4 -- 1.5 | 49.4% | this is the only band that moves |
-| \|eval\| < 0.4 | 23.9% | nothing until `k` gets large, then it collapses too |
+| 0.4 -- 1.5 | 49.4% | the only band that moved |
+| \|eval\| < 0.4 | 23.9% | nothing until the scale got large, then collapsed too |
 
-At the default, endgames are already as sharp as the data allows: `D=0.035` by eval `1.50` and `0.002` by `2.00`. There is no headroom left to buy.
+The worked example: at `-wdl-scale 1.8`, a ply-0 opening-book position with a PGN eval of `-0.78` came out as `Q=-0.873, D=0.127`, where the measured outcome for that band (n=82,299) is `Q=0.445, D=0.550`. It asserted an 87%-decided game before a single move had been played. It never touched the endgame; it rewrote the opening.
 
-**Worked example of the trap.** Converting real Fishtest games at `-wdl-scale 1.8`, the very first position of a game -- an opening-book position, ply 0, with a PGN eval of `-0.78` -- came out as `Q=-0.873, D=0.127`. The measured outcome for that eval band (`0.75`--`1.00`, n=82,299) is `Q=0.445, D=0.550`. So `1.8` asserted an 87%-decided game before a single move had been played, in positions that really drew more than half the time. It never touched the endgame; it rewrote the opening.
+If what you want is a value head that converts won endgames, this was never the lever -- the targets there are already maximal, and the problem lies in search or in the M head.
 
-| scale | Q at eval `0.78` | D |
-| --- | --- | --- |
-| `1.13` (default) | 0.362 | 0.637 |
-| `1.3` | 0.517 | 0.483 |
-| `1.4` | 0.608 | 0.392 |
-| `1.8` | 0.873 | 0.127 |
-| `2.8` | 0.996 | 0.004 |
-| *measured* | *0.445* | *0.550* |
+### Policy sharpness and the eval distribution
 
-**Recommendation: stay at `1.13` unless you have a reason.** It is fitted to the real outcomes. If you want a deliberate nudge toward confidence, `1.3` straddles the measured figure rather than overshooting it; past `1.4` you are reshaping ordinary play, not endgames. If what you actually want is a value head that converts won endgames, this knob is not the lever -- the targets there are already maximal, and the problem lies in search or in the M head.
+With a pseudo visit budget (`-visit-budget 850`), the policy target for the played move is derived from `Q`:
 
-`-wdl-spread` sets the draw rate at equality and the transition steepness:
-
-| `-wdl-spread` (at `wdl-scale=1.13`) | D at `0.00` | D at `0.75` | D at `2.00` |
-| --- | --- | --- | --- |
-| `0.14` | 0.998 | 0.748 | 0.0001 |
-| `0.21` (default) | 0.983 | 0.674 | 0.0025 |
-| `0.30` | 0.931 | 0.622 | 0.015 |
-| `0.45` | 0.805 | 0.568 | 0.057 |
-
-Lowering spread sharpens the decisive tail *and* makes equal positions more drawish at the same time. It is the only knob with any differential effect by eval magnitude, though the tail is already near zero so there is little to gain. Keep `-wdl-spread` at `0.21` unless you specifically want both effects.
-
-### Making the targets less sharp
-
-**Raise `-wdl-spread`** (the more effective knob here), or lower `-wdl-scale`:
-
-```bash
-# softer -- won positions retain noticeably more draw probability
-./build/trainingdata-tool -pgn-eval-mode -wdl-spread 0.30 games-finished.pgn
-
-# much softer, and less certain at equal too
-./build/trainingdata-tool -pgn-eval-mode -wdl-spread 0.45 games-finished.pgn
-```
-
-**Caveat worth knowing:** raising spread softens the decisive end but *also* drags the draw rate at equality down (`D=0.98` → `0.81` going from `0.21` to `0.45`), because one parameter controls both. Lowering `-wdl-scale` softens while leaving equality untouched, but it flattens the whole curve, so a genuinely won position and a modest edge start looking alike. Neither knob acts on one part of the range in isolation -- pick which side effect you'd rather have, and re-measure afterwards.
-
-### Policy Sharpness & Eval Distributions: What to Tweak and What NOT to Tweak
-
-When converting PGN games with a pseudo visit budget (`-visit-budget 850`), the policy target confidence for the played move is derived from the position's evaluation ($Q$-score):
 $$\text{played\_policy\_share} = \max(W, 1 - W) = 0.5 + \frac{|Q|}{2}$$
-The remaining probability is distributed among the other legal moves. Because $Q$ comes directly from the logistic WDL formula with `-wdl-scale` and `-wdl-spread`, the sharpness of the policy head's targets is intimately tied to these parameters and the source PGN's evaluation profile.
 
-#### 1. Real Eval Distribution in Fishtest PGNs (Measured across 96,000+ positions)
+so policy sharpness is tied to the same curve. The eval distribution it acts on, measured across 96,000+ Fishtest positions:
 
-Analysis of real Fishtest test runs reveals how evaluations are distributed across a full test batch:
-
-| Centipawn Evaluation Range | Percentage of Positions | Context in Game |
+| eval range | share of positions | context in game |
 | --- | --- | --- |
-| **$\le 0.50$ pawns** ($\le 50$ cp) | **21.8%** | Equal openings, quiet maneuvering, symmetrical endings |
-| **$0.50$ – $1.50$ pawns** ($50$–$150$ cp) | **39.0%** | Significant initiative, pawn advantage, contested middlegames |
-| **$1.50$ – $4.00$ pawns** ($150$–$400$ cp) | **16.4%** | Decisive tactical advantage, piece up |
-| **$> 4.00$ pawns** ($> 400$ cp) | **22.8%** | Adjudication threshold band & endgame tails |
+| **$\le 0.50$ pawns** | **21.8%** | equal openings, quiet maneuvering, symmetrical endings |
+| **$0.50$ – $1.50$ pawns** | **39.0%** | significant initiative, pawn advantage, contested middlegames |
+| **$1.50$ – $4.00$ pawns** | **16.4%** | decisive tactical advantage, piece up |
+| **$> 4.00$ pawns** | **22.8%** | adjudication threshold band & endgame tails |
 
-#### 2. The Sharpness Trap: Why `wdl-spread 0.21` Creates Near 100% 1-Hot Targets
+Under the old constant `spread 0.21`, anything past `+1.50` produced `Q >= 0.965`, so with ~39% of a Fishtest batch sitting above that, close to half the dataset became 98–100% one-hot. The schedule is much gentler at the same evals -- `D` is still `0.1204` at `+3` and `0.0265` at `+8` -- so that particular trap is gone. The remaining lever on policy sharpness is `-visit-budget`, not the WDL parameters.
 
-At `-wdl-scale 1.13` and `-wdl-spread 0.21`, any evaluation past $+1.50$ pawns produces $Q \ge 0.965$. Since nearly **40% of positions in a typical Fishtest batch have evals $> 1.50$ pawns**, almost half the training dataset ends up with **$98.2\%$ to $100\%$ one-hot targets**:
-
-| Eval (Pawns) | Current (`spread 0.21`) | Moderate (`spread 0.45`) | Smooth (`spread 0.60`) |
-| --- | --- | --- | --- |
-| **$0.00$** | $Q=0.000$ -> **50.0%** share | $Q=0.000$ -> **50.0%** share | $Q=0.000$ -> **50.0%** share |
-| **$+0.25$** | $Q=0.030$ -> **51.5%** share | $Q=0.100$ -> **55.0%** share | $Q=0.112$ -> **55.6%** share |
-| **$+0.50$** | $Q=0.111$ -> **55.6%** share | $Q=0.213$ -> **60.7%** share | $Q=0.227$ -> **61.4%** share |
-| **$+0.75$** | $Q=0.326$ -> **66.3%** share | $Q=0.345$ -> **67.2%** share | $Q=0.346$ -> **67.3%** share |
-| **$+1.00$** | $Q=0.650$ -> **82.5%** share | $Q=0.488$ -> **74.4%** share | $Q=0.466$ -> **73.3%** share |
-| **$+1.50$** | $Q=0.965$ -> **98.2%** share *(saturated)* | $Q=0.748$ -> **87.4%** share | $Q=0.682$ -> **84.1%** share |
-| **$+2.00$** | $Q=0.998$ -> **99.9%** share *(saturated)* | $Q=0.901$ -> **95.0%** share | $Q=0.834$ -> **91.7%** share |
-| **$+3.00$** | $Q=1.000$ -> **100.0%** share | $Q=0.988$ -> **99.4%** share | $Q=0.964$ -> **98.2%** share |
-| **$+4.00$** | $Q=1.000$ -> **100.0%** share | $Q=0.999$ -> **100.0%** share | $Q=0.995$ -> **99.8%** share |
-
-#### 3. Practical Guidance: What to Tweak vs. What NOT to Tweak
-
-##### What NOT to Tweak
-
-1. **DO NOT raise `-wdl-scale` past `1.3` to seek "endgame sharpness"**:
-  - `wdl-scale` does not know what game phase a position belongs to.
-  - Raising `wdl-scale` to `1.8` forces early opening and middlegame moves evaluated at $\pm 0.78$ to be labeled as $87\%$ decided wins/losses when they really draw more than half the time. Endgames are already saturated at $\ge 1.50$ pawns and gain zero benefit.
-2. **DO NOT use shallow depth-6 engine finishers to artificially extend games**:
-  - Playing out adjudicated positions with low-depth search floods the dataset with $20\%+$ low-quality positions evaluated between $+5.00$ and $+80.00$, ruining `plies_left` targets and inflating policy loss.
-
-##### What TO Tweak
-
-1. **For an even, well-calibrated policy spread across all game phases**:
-  - Use **`-wdl-spread 0.45` to `0.60`** with **`-wdl-scale 1.00` to `1.13`**.
-  - This prevents middlegames with $+1.50$ pawns from collapsing into 1-hot targets and allows candidate moves to retain meaningful policy gradient until genuine conversion ($> 3.0$ pawns).
-2. **For clean endgame training data**:
-  - Rely on Cutechess/Fishtest adjudication rules (typically $+4.00$ to $+6.00$ pawns sustained over multiple plies).
-  - Use Syzygy tablebase rescoring (`scripts/rescore_all.py` / `rescore_chunks.py`) to accurately correct terminal win/draw/loss labels and `plies_left` distance-to-mate.
+**Still true and unrelated to any of this:** do not use shallow depth-6 engine finishers to artificially extend adjudicated games. Playing out adjudicated positions with low-depth search floods the dataset with low-quality positions evaluated between `+5.00` and `+80.00`, ruining `plies_left` targets and inflating policy loss. For clean endgame data, rely on the adjudication rules and on Syzygy rescoring (`scripts/rescore_all.py` / `rescore_chunks.py`).
 
 ### Weighting the leftover by static eval (`-policy-static-eval`)
 
@@ -491,28 +461,18 @@ loses material by definition, and one ply of capture resolution cannot see the
 compensation. The point of the floor is that they stay *reachable*, not that
 they are taught as candidates.
 
-### Re-fitting against your own data
+### Inspecting a corpus
 
-If you switch to a different PGN source (different engines, time control, opening book, or adjudication settings), **re-measure rather than eyeballing** -- the draw-rate curve is a property of that data, not a universal constant.
-
-**Start here.** This measures the target directly from the PGNs you're about to convert and fits *both* parameters at once:
-
-```bash
-py scripts/measure_pgn_wdl.py games.pgn.gz --limit 8000
-```
-
-It buckets positions by the signed eval in their comment (mover's perspective), counts the real win/draw/loss frequencies in each band, and grid-searches `(scale, spread)` against them. It prints the best pair and its RMSE on `(W, L)` -- feed those straight into `-wdl-scale` / `-wdl-spread`. It also prints what lc0's `centipawn` display formula would have claimed for the same bands, which is where the miscalibration quoted above comes from.
-
-`scripts/measure_pgn_draw_rate.py` is the narrower version: draw rate per eval band plus the implied `-wdl-spread` for the near-equal band alone. Useful if you only care about the equality end, or as a cross-check on the spread the full fit picked.
-
-The remaining scripts fit against **V6 chunks** rather than PGNs -- useful for inspecting an existing dataset or an lc0 self-play run, but remember those describe *that* distribution, not the PGNs you're converting:
+The scripts below **no longer feed anything back into conversion** -- see "There is nothing to fit" above. They remain useful for looking at what a corpus actually contains.
 
 | Script | What it does |
 | --- | --- |
-| `measure_draw_rate.py` | Measures a network's draw rate from its own V6 chunks, and converts it to the implied spread. The offline equivalent of reading `WDLDrawRateReference` off a running engine. |
+| `measure_pgn_wdl.py` | Buckets PGN positions by the eval in their comment and counts real win/draw/loss frequencies per band. Read it as a description of the source games (and of how hard adjudication shapes them), not as a source of parameters. |
+| `measure_pgn_draw_rate.py` | Draw rate per eval band, the narrower version of the above. |
+| `measure_draw_rate.py` | Draw rate from a network's own V6 chunks. |
 | `calibrate_s.py` | Average/median real `D` for near-equal positions only. Quickest sanity check that a dataset looks like you expect. |
-| `calibrate_s2.py` | Compares real `D` against the model across `|Q|` bands for candidate values. Shows *how* a setting is wrong, not just that it is. |
-| `calibrate_s3.py` | Two-parameter `(scale, spread)` grid search over V6 chunks. |
+| `calibrate_s2.py` | Compares real `D` against the model across `|Q|` bands. |
+| `calibrate_s3.py` | Two-parameter grid search over V6 chunks. Historical -- the parameters it searches are no longer free. |
 
 If your chunks are packed in `.tar` archives (as lc0 training runs ship them), extract one first:
 
@@ -521,7 +481,7 @@ tar -xf training-run2-....tar -C /tmp/chunks
 py scripts/calibrate_s3.py "/tmp/chunks/*/*.gz" 800
 ```
 
-**One trap to avoid:** the two scales are *not* interchangeable. `Q=0.76` is a nearly-won position; an eval of `0.76` is only a modest edge. The model takes the **eval**, not `Q` -- `mu = scale * eval` -- so anything fitted against V6 chunks needs its `Q` mapped back to an eval first. Fit directly on `Q` and the numbers you get out will be nonsense: `D` saturates to ~0 by about `1.00` and nearly every position reads as decisively won. This is exactly the mistake the `centipawn` display formula invites, and it's why `measure_pgn_wdl.py` (which works from PGN evals) is the recommended fitting path.
+**One trap that still applies when reading any of these:** `Q` and an eval are not the same scale. `Q=0.76` is a nearly-won position; an eval of `0.76` is only a modest edge. The model takes the **eval**, so anything measured against V6 chunks needs its `Q` mapped back to an eval before it can be compared with a PGN-derived number.
 
 ## The 50-move rule in static eval
 

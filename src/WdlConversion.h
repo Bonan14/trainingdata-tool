@@ -36,11 +36,13 @@ namespace wdl {
 // +2.45 pawns it claims +0.78 where the truth is +1.00.
 // (scripts/measure_pgn_wdl.py reproduces that comparison.)
 //
-// `scale` and `spread` are fitted against the real outcomes of the games
-// being converted -- see Options::wdl_scale in PGNGame.h. `scale` lands
-// near 1.0 as the model implies; `spread` is lc0's scale_reference and
-// follows from the draw rate.
-// The spread schedule: constant below `join`, centipawn-derived above it.
+// `scale` is pinned at 1.0 by lc0's decode convention and is not fitted --
+// see Options::wdl_scale in PGNGame.h.
+//
+// The spread schedule: flat below `join`, centipawn-derived above it. It is
+// UNCONDITIONAL -- there is no constant-spread mode. The old -wdl-spread and
+// -wdl-max knobs provided one and have been removed; the schedule subsumes
+// both, since it keeps W off the saturation rail without needing a cap.
 //
 // A single constant spread cannot serve both ends of the eval range. Narrow
 // values model the draw plateau near equality but make lc0 abandon its own
@@ -66,11 +68,13 @@ namespace wdl {
 // (the solved spread collapses toward 0, turning the target into a step
 // function), so the join must sit where the schedule is still sensible
 // rather than at its mathematical limit. Below it the spread is held at its
-// join value -- continuous, and the only free choice in the whole curve.
+// join value (0.659 at join 1.5) -- continuous, and the only free choice in
+// the whole curve.
 //
-// join 1.5 gives D = 0.641 at equality; join 2.0 gives 0.526. Reference-net
+// join 1.5 gives D = 0.6401 at equality; join 2.0 gives 0.5263. Reference-net
 // measurements put the true figure between 0.68 and 0.88, so 1.5 is the
-// closer of the two.
+// closer of the two. The join cannot be pushed to its limit: at join 1.0 the
+// curve degenerates to D(0) = 1.0000, a step function.
 namespace detail {
 
 inline double WdlLogistic(double x) {
@@ -122,12 +126,17 @@ inline const std::vector<double>& SpreadTable() {
 
 }  // namespace detail
 
+// The join used unless a caller overrides it -- 1.5 pawns, derived above.
+constexpr float kDefaultJoin = 1.5f;
+
 // Spread to use for a position whose eval is `score_pawns`, given the join.
-// join <= 0 means "no schedule": the caller's constant spread is used.
-inline float SpreadForEval(float score_pawns, float join, float spread) {
-  if (!(join > 0.0f)) return spread;
+// A non-positive join has no meaning now that the schedule is unconditional,
+// so it falls back to kDefaultJoin rather than producing a degenerate curve.
+inline float SpreadForEval(float score_pawns, float join) {
+  const double j = join > 0.0f ? static_cast<double>(join)
+                               : static_cast<double>(kDefaultJoin);
   const double ev = std::fabs(static_cast<double>(score_pawns));
-  const double use = ev < join ? join : ev;
+  const double use = ev < j ? j : ev;
   const auto& t = detail::SpreadTable();
   const double pos = use / detail::kSpreadStep;
   const size_t i = static_cast<size_t>(pos);
@@ -136,33 +145,21 @@ inline float SpreadForEval(float score_pawns, float join, float spread) {
   return static_cast<float>(t[i] * (1.0 - f) + t[i + 1] * f);
 }
 
-// max_wl caps W and L, leaving the remainder as D.
-//
-// The logistic saturates: once (mu - 1)/spread passes about 17 the float
-// result is EXACTLY 1.0, and the value target then asserts the game is
-// already decided in a position that is merely winning. Capping at, say,
-// 0.995 leaves a 0.005 residual that says "winning, not over".
-//
-// This is deliberately separate from spread. Widening spread also keeps W
-// off the rail, but it does so by flattening the entire curve -- at spread
-// 0.85 a won +1.5 position reports W = 0.69 -- so it pays for the tail
-// everywhere else. A cap changes only the positions that were saturating.
-// Default 1.0f, i.e. no cap, so existing callers are unaffected.
-inline void ScoreToWDL(float score_pawns, float scale, float spread,
-                       float& q, float& d, float max_wl = 1.0f,
-                       float join = 0.0f) {
+// There is no max_wl cap any more. It existed because a constant spread let
+// the logistic saturate to EXACTLY 1.0 once (mu - 1)/spread passed about 17,
+// making the target assert that a merely-winning position was already
+// decided. The schedule keeps W off that rail by itself -- W is 0.9915 at
+// eval 30 and still only 0.9993 at 100, never reaching 1.0 -- so the cap had
+// nothing left to do and went with -wdl-spread.
+inline void ScoreToWDL(float score_pawns, float scale, float& q, float& d,
+                       float join = kDefaultJoin) {
   const float mu = scale * score_pawns;
-  // With the schedule on, `spread` is only the low-branch value and the
-  // effective spread comes from SpreadForEval. mu is unaffected either way:
+  // The effective spread comes from the schedule. mu is unaffected by it:
   // the spread cancels out of (a-b)/(a+b), which is why it can vary per
   // position without breaking the round-trip.
-  const float s_eff = SpreadForEval(score_pawns, join, spread);
-  float w = 1.0f / (1.0f + std::exp(-(mu - 1.0f) / s_eff));
-  float l = 1.0f / (1.0f + std::exp(-(-mu - 1.0f) / s_eff));
-  if (max_wl < 1.0f) {
-    w = (std::min)(w, max_wl);
-    l = (std::min)(l, max_wl);
-  }
+  const float s_eff = SpreadForEval(score_pawns, join);
+  const float w = 1.0f / (1.0f + std::exp(-(mu - 1.0f) / s_eff));
+  const float l = 1.0f / (1.0f + std::exp(-(-mu - 1.0f) / s_eff));
   q = w - l;
   // W and L already sum to <= 1 by construction, so D needs no clamping
   // against |Q| the way it would if Q came from an unrelated formula.
@@ -170,9 +167,10 @@ inline void ScoreToWDL(float score_pawns, float scale, float spread,
 }
 
 // Convenience wrapper for callers holding integer centipawns.
-inline float CentipawnToQ(int centipawns, float scale, float spread) {
+inline float CentipawnToQ(int centipawns, float scale,
+                          float join = kDefaultJoin) {
   float q, d;
-  ScoreToWDL(static_cast<float>(centipawns) / 100.0f, scale, spread, q, d);
+  ScoreToWDL(static_cast<float>(centipawns) / 100.0f, scale, q, d, join);
   return q;
 }
 

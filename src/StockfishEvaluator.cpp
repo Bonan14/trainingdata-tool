@@ -382,14 +382,18 @@ float StockfishEvaluator::cpToWinProbability(int centipawns) {
   if (centipawns >= 10000) return 1.0f;
   if (centipawns <= -10000) return -1.0f;
 
-  // Shared with -pgn-eval-mode via wdl::ScoreToWDL, using the defaults
-  // fitted against real game outcomes. This used to be an ad-hoc sigmoid,
-  // 2/(1+exp(-0.4*cp/100))-1, which did not match what PGNGame.cpp does
-  // and so gave a different Q for the same score depending on mode.
+  // Shared with -pgn-eval-mode via wdl::ScoreToWDL. This used to be an
+  // ad-hoc sigmoid, 2/(1+exp(-0.4*cp/100))-1, which did not match what
+  // PGNGame.cpp does and so gave a different Q for the same score
+  // depending on mode.
+  //
+  // Scale is 1.0, pinned by lc0's decode convention -- see Options::wdl_scale.
+  // The join is the schedule's default, so this reproduces -pgn-eval-mode's
+  // curve exactly rather than the old constant-spread one.
   //
   // Prefer the engine's own WDL (Result::has_wdl) when it reports one;
   // this is only for engines that do not.
-  return wdl::CentipawnToQ(centipawns, /*scale=*/1.13f, /*spread=*/0.21f);
+  return wdl::CentipawnToQ(centipawns, /*scale=*/1.0f, wdl::kDefaultJoin);
 }
 
 void StockfishEvaluator::quit() {

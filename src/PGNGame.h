@@ -23,24 +23,33 @@ struct Options {
   bool pgn_eval_mode = false;
   bool stockfish_mode = false;
   // WDL model for pgn_eval_mode: mu = wdl_scale * eval, then
-  // W = logistic((mu-1)/wdl_spread), L = logistic((-mu-1)/wdl_spread),
-  // giving Q = W-L and D = 1-W-L together. This is lc0's "WDL_mu" model
-  // run backwards -- search.cc reports score = 100*mu, so mu is simply the
+  // W = logistic((mu-1)/spread), L = logistic((-mu-1)/spread), giving
+  // Q = W-L and D = 1-W-L together. This is lc0's "WDL_mu" model run
+  // backwards -- search.cc reports score = 100*mu, so mu is simply the
   // eval in pawns. See wdl::ScoreToWDL in WdlConversion.h.
   //
-  // Defaults are FITTED against the actual outcomes of the games being
-  // converted: bucket positions by the eval in their PGN comment, count
-  // the real win/draw/loss frequencies, and fit W and L to them.
-  // RMSE 0.015 on (W, L) -- see scripts/measure_pgn_wdl.py, which runs
-  // exactly this fit and prints the values to use. Stable across Fishtest
-  // files: five separate ones fit to scale 1.11-1.27, spread 0.20-0.21.
+  // wdl_scale MUST be 1.0 and is NOT a fittable parameter. lc0 inverts a
+  // value target with a = log(1/l-1), b = log(1/w-1), mu = (a-b)/(a+b),
+  // and reports score = 100*mu -- so mu IS the eval by convention, and any
+  // other scale makes lc0 read back scale*eval on every position. Verified
+  // by round-trip: scale 1.0 recovers an encoded eval of 3.00 as 3.0000,
+  // scale 1.13 as 3.3900 (+13%), scale 0.77 as 2.3100 (-23%).
   //
-  // wdl_scale landing near 1.0 is a consistency check, not a coincidence:
-  // the model says mu IS the eval, so a large correction would have meant
-  // the model was wrong. Do not substitute lc0's "centipawn" score type
-  // (cp = 90*tan(1.5637541897*Q)) here -- that is a display convention,
-  // not a calibrated win-probability model, and measured against real
-  // outcomes it is badly miscalibrated at both ends.
+  // Both of those wrong values were once defaults here, and both came from
+  // fitting: 1.13 against Fishtest outcomes (a population of two
+  // near-identical Stockfishes with ~86% adjudication, which reports D~1.00
+  // at eval 0 and saturates the target), and 0.77 against a reference net's
+  // reported WDL (which is post-WDLRescale search output, not the value
+  // head, and which disagrees non-monotonically between nets). Each was
+  // correcting a bias that only existed because scale was free. Do not
+  // re-fit it; scripts/measure_pgn_wdl.py's grid search over (scale,
+  // spread) is retained for inspecting a corpus, not for setting these.
+  //
+  // Do not substitute lc0's "centipawn" score type (cp = 90*tan(1.5637541897*Q))
+  // as the win-probability model either -- it is a display convention. It
+  // does appear below as the CONSTRAINT that pins the spread above the join,
+  // which is a different use: there we demand agreement with it so lc0's two
+  // score paths do not diverge, rather than treating it as calibrated.
   //
   // Deliberately NOT lc0's WDLDrawRateReference. That parameter describes
   // the net you are *running* (looked up by running it from startpos and
@@ -50,37 +59,21 @@ struct Options {
   // would aim at the wrong thing, and would be circular if that net is the
   // one being trained.
   //
-  // Caveat: ~86% of Fishtest games end by adjudication, and cutechess
-  // adjudicates a draw exactly when the eval sits near zero, so this curve
-  // is partly shaped by the adjudication rule rather than pure chess. It
-  // is still the real label distribution in the data, and is consistent
-  // with result_q/result_d, which come from the same recorded results.
-  //
-  // Raising wdl_scale sharpens: a given eval maps to a larger mu, so the
-  // transition to a decided result happens at a smaller eval. wdl_spread
-  // is lc0's scale_reference and follows from the draw rate at an equal
-  // position: spread = 1/log((1+r)/(1-r)), equivalently
-  // D(equal) = 1 - 2*logistic(-1/spread). Re-fit rather than eyeballing if
-  // these change; scripts/measure_pgn_wdl.py fits both.
-  float wdl_scale = 1.13f;
-  float wdl_spread = 0.21f;
-  // Caps W and L in the value target so a won-but-unfinished position never
-  // gets an exactly-1.0 label. See wdl::ScoreToWDL. 1.0 = no cap.
-  //
-  // Use this, not a wide wdl_spread, to leave that residual: spread flattens
-  // the whole curve (at 0.85 a won +1.5 position reports W = 0.69 and the
-  // fit's RMSE goes 0.007 -> 0.174), while the cap touches only the
-  // positions that were saturating in the first place.
-  float wdl_max = 1.0f;
-  // Eval (in pawns) at which the spread schedule switches from constant to
-  // centipawn-derived. See wdl::SpreadForEval. 0 disables the schedule and
-  // falls back to a constant wdl_spread.
+  // Caveat on the source data: ~86% of Fishtest games end by adjudication,
+  // and cutechess adjudicates a draw exactly when the eval sits near zero,
+  // so the observed outcome curve is partly the adjudication rule reporting
+  // itself. That is precisely why fitting to it was the wrong objective.
+  float wdl_scale = 1.0f;
+  // Eval (in pawns) at which the spread schedule switches from flat to
+  // centipawn-derived. See wdl::SpreadForEval. Must be > 0: the schedule is
+  // unconditional now, and the old constant-spread escape hatch (wdl_spread,
+  // wdl_max, and wdl_join 0) has been removed.
   //
   // At 1.5 the curve keeps lc0 on its WDL_mu score path at EVERY eval from 0
   // to 30 -- no constant spread manages that -- with mu exact throughout, D
-  // falling monotonically 0.641 -> 0.297 -> 0.121 -> 0.027 -> 0.002, and W
-  // peaking at 0.991 rather than saturating. wdl_max is consequently
-  // redundant while this is on.
+  // falling monotonically (0.640 at eval 0, 0.297 at 1.5, 0.120 at 3, 0.027
+  // at 8, 0.002 at 30) and W never saturating: 0.9915 at eval 30 and still
+  // only 0.9993 at 100, which is why no separate cap is needed.
   float wdl_join = 1.5f;
   // Halfmove clock at which static evaluation starts blending its (Q, D)
   // toward a certain draw, reaching a full draw at the 100-ply limit.
@@ -109,7 +102,7 @@ struct Options {
   // to move there, so the product is +1 when the position supports the
   // result and negative when it contradicts it.
   //
-  // 0.7 is the suggested value: at the wdl_scale/wdl_spread above that is
+  // 0.7 is the suggested value: on the curve above that is
   // already a decisively winning position, not a mere edge. Deliberately
   // NOT lower -- a forfeit from a balanced position (agreement near 0) is
   // genuinely unknowable, and guessing a winner there would inject exactly
